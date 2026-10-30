@@ -7,7 +7,8 @@ runs on Modal GPUs with PyTorch DistributedDataParallel and bf16 mixed precision
 tracked in MLflow with checkpoints, metrics, plots and hardware metadata.
 
 A plain-English walkthrough of how every file, Modal, MLflow and the API connect (with sequence
-diagrams) lives in [docs/workflow.md](docs/workflow.md).
+diagrams) lives in [docs/workflow.md](docs/workflow.md); [docs/logic.md](docs/logic.md) follows the code
+step by step, from the command you type to the tensors in a training step and the inference path.
 
 ## Project layout
 

@@ -28,6 +28,7 @@ sequenceDiagram
     participant A as argparse
     participant C as config.py (pydantic-settings)
     participant S as Settings object
+    participant R as trainer.py: run_training()
 
     You->>P: python scripts/train.py --epochs 50 --smoke
     P->>A: parse_args(argv)
@@ -38,7 +39,7 @@ sequenceDiagram
     P->>S: smoke_test_variant() if --smoke
     P->>S: with_overrides(training={"epochs": 50}, ...)
     S-->>P: final, frozen Settings
-    P->>P: run_training(settings, run_type, launcher, device)
+    P->>R: run_training(settings, run_type, launcher, device)
 ```
 
 1. The shell starts Python with `scripts/train.py` and the flags you typed.
@@ -46,7 +47,8 @@ sequenceDiagram
    flags `--epochs`, `--batch-size`, `--precision`, `--max-pairs`, `--run-name`, `--experiment`,
    `--device`, `--launcher`, `--smoke` and `--summary-json`.
 3. The parser returns a `Namespace`: a small object with one attribute per flag (`None` when a flag
-   was not given).
+   was not given, except `launcher`, which defaults to `"local"`, and `smoke`, which defaults to
+   `False`).
 4. `build_settings()` calls `get_settings()` from `config.py`.
 5. Pydantic builds each settings section (`DataSettings`, `ModelSettings`, `TrainingSettings`,
    `TrackingSettings`, `InferenceSettings`, `ModalSettings`) from three layers, later layers winning:
@@ -119,8 +121,13 @@ sequenceDiagram
    (`--nproc_per_node=2`) and the exported variables in its environment.
 6. `torchrun` starts two copies of `scripts/train.py` and sets `RANK`, `LOCAL_RANK` and `WORLD_SIZE`
    for each.
-7. Each copy goes through Section 1 unchanged; because the environment carries the laptop's settings,
-   both ranks build the same `Settings` object the laptop would have built.
+7. Each copy goes through Section 1 unchanged; because the environment carries the laptop's exported
+   settings, both ranks build the same `Settings` the laptop would have built, with three
+   differences: `train_on_gpu()` sets `TRACKING_ARTIFACTS_DIR=/root/artifacts` (so every derived path,
+   including the MLflow database, points inside the container), it removes any
+   `TRACKING_MLFLOW_TRACKING_URI` (the container always uses the restored SQLite store), and `main()`
+   never sends `DATA_LOCAL_FILE` (the container downloads the corpus). This is why `download_results()`
+   has to relocate the MLflow store afterwards.
 8. Rank 0 writes `summary.json` when training ends.
 9. `train_on_gpu()` returns it with the GPU names and the list of persisted paths.
 10. `main()` downloads the results into `artifacts/modal/` (details in workflow.md, Flow A).
@@ -207,7 +214,7 @@ sequenceDiagram
     DS-->>DP: 135,842 (English, French) string pairs
     DP->>DP: swap pairs if data.swap_pair_order
     DP->>DS: normalize_and_filter_pairs(pairs, tokenizer, max_seq_len=40)
-    DS->>PR: normalize_text(), WordTokenizer() per sentence
+    DS->>PR: normalize_text() then tokenizer(text) per sentence
     DS-->>DP: 135,835 cleaned pairs
     DP->>DS: deduplicate_pairs() then split_pairs(fraction=0.1, seed=42)
     DS-->>DP: 122,048 train / 13,561 validation pairs
@@ -287,7 +294,7 @@ sequenceDiagram
     N->>N: clip_grad_norm_(parameters, 1.0)
     N->>O: optimizer.step(), scheduler.step()
     N->>N: accumulate loss sum, token count, correct tokens on device
-    N->>K: every 50 steps, log step/loss, step/learning_rate, step/grad_norm, step/tokens_per_second
+    N->>K: every 50 steps: log step/* metrics (loss, lr, grad norm, tokens/s)
 ```
 
 1. The loader yields one padded batch; both tensors are moved to the GPU with `non_blocking=True`.
@@ -329,11 +336,11 @@ flowchart TD
     TGT["target_input tokens [B, T-1]"] --> EMB2["decoder.token_embedding x sqrt(d)<br/>[B, T-1, 256]"]
     TGT --> TM["masks.py: make_target_mask<br/>causal AND padding, [B, 1, T-1, T-1]"]
     EMB2 --> PE2["SinusoidalPositionalEncoding + dropout"]
-    PE2 --> DEC["3 x TransformerDecoderLayer<br/>masked self-attention, cross-attention to memory, feed-forward"]
+    PE2 --> DEC["3 x TransformerDecoderLayer<br/>masked self-attention + cross-attention<br/>to memory + feed-forward, Pre-LN"]
     TM --> DEC
     MEM --> DEC
     PM --> DEC
-    DEC --> LN2["LayerNorm"] --> OUT["output_projection (weights tied to the embedding)<br/>logits [B, T-1, 14700]"]
+    DEC --> LN2["LayerNorm"] --> OUT["output_projection<br/>(tied to the decoder embedding)<br/>logits [B, T-1, 14700]"]
 ```
 
 - `TransformerEncoder.forward()` (`model/encoder.py`) embeds the tokens, scales by √256 as in the
@@ -369,7 +376,7 @@ sequenceDiagram
     B-->>F: val/bleu
     F->>K: log_metrics(train/*, val/*, system/peak_memory_gb, step=epoch)
     F->>C: save_checkpoint(last.pt)
-    F->>C: on improvement: save_checkpoint(best.pt), BestCheckpointSummary.save(best.json)
+    F->>C: on improvement: save best.pt and best.json
     F->>F: _should_stop_early() agreed by all ranks
 ```
 
@@ -414,34 +421,41 @@ sequenceDiagram
     participant M as Seq2SeqTransformer
 
     You->>P: python scripts/translate.py "I love this movie."
-    P->>C: find_best_checkpoint(artifacts/)
-    C-->>P: .../best.pt of the best non-smoke run
-    P->>T: Translator.from_checkpoint(best.pt)
-    T->>T: read settings.json, source_vocab.json, target_vocab.json
+    P->>T: Translator.from_best_run(artifacts/)
+    T->>C: find_best_checkpoint(artifacts/)
+    C-->>T: .../best.pt of the best non-smoke run
+    T->>T: from_checkpoint(): read settings.json and both vocabularies
     T->>M: Seq2SeqTransformer(...) and load_state_dict(best.pt)
     P->>T: translate(sentence, beam_size=4)
     T->>T: _encode_source(): normalize_text, WordTokenizer, Vocabulary.encode
     T->>M: encode(source) once, then decode() step by step (beam_search)
     T-->>P: _indices_to_sentence(): Vocabulary.decode, detokenize
-    P-->>You: j'adore ce film.
+    P-->>You: EN: I love this movie. / FR: j'adore ce film.
 ```
 
 1. You pass one or more sentences (none opens an interactive prompt).
-2. Without `--checkpoint`, `checkpoint.py: find_best_checkpoint()` scans `artifacts/` recursively
-   for `best.json` cards with weights beside them, drops smoke runs when full runs exist, keeps runs
-   selected with the same metric and returns the best.
-3. The chosen `best.pt`.
-4. `Translator.from_checkpoint()` reads the run directory.
-5. `settings.json` gives the architecture (`ModelSettings`) and the training-time sentence limit; the
+2. Without `--checkpoint` (or `INFERENCE_CHECKPOINT_PATH`), `load_translator()` calls
+   `Translator.from_best_run(artifacts/)`; with either of them it calls `Translator.from_checkpoint()`
+   on that file directly.
+3. `from_best_run()` calls `checkpoint.py: find_best_checkpoint()`, which scans `artifacts/`
+   recursively for `best.json` cards with weights beside them, drops smoke runs when full runs exist,
+   requires the remaining runs to share one selection metric (otherwise it stops with an error; only
+   the API's `ModelRegistry.models()` catches that and groups by metric instead) and returns the best.
+4. The chosen `best.pt` is handed back.
+5. `from_best_run()` passes it to `Translator.from_checkpoint()`, which reads the run directory:
+   `settings.json` gives the architecture (`ModelSettings`) and the training-time sentence limit; the
    two vocabulary files restore the exact word ↔ id mapping used in training.
 6. The model is rebuilt with those settings and the saved weights are loaded (`torch.load(...,
    weights_only=True)`), on the best available device.
 7. `translate()` with `beam_size` 4 (the default from `InferenceSettings`).
 8. The sentence is cleaned and tokenised with the same functions as training; unknown words become
    `<unk>`; the result is a `[1, S]` tensor.
-9. The encoder runs once; `beam_search()` then calls `decode()` one word at a time keeping the 4 best
-   partial sentences, stopping when the best finished sentence can no longer be beaten (length
-   penalty 0.6). `beam_size` 1 instead calls `greedy_decode()`.
+9. The encoder runs once; `beam_search()` then calls `decode()` one word at a time keeping up to 4
+   alive partial sentences and the 4 best finished ones. It stops when no partial sentence is left
+   alive, when 4 finished sentences exist and even the worst of them scores at least as well (after
+   the 0.6 length penalty) as the best alive beam, or when `max_decode_len` (40) words have been
+   generated, in which case the alive beams compete with the finished ones. `beam_size` 1 instead
+   calls `greedy_decode()`.
 10. Ids are mapped back to words (`Vocabulary.decode()` stops at `<eos>` and drops specials) and
     punctuation is re-attached (`WordTokenizer.detokenize()`).
 11. The translation is printed.
@@ -474,4 +488,4 @@ Section 7 lists every endpoint.
 | Train, validate, score | `training/trainer.py`, `training/metrics.py` | `Trainer.fit()`, `_train_epoch()`, `_validate()`, `_evaluate_bleu()`, `TokenLossAccumulator`, `corpus_bleu()` |
 | Save and pick checkpoints | `training/checkpoint.py` | `save_checkpoint()`, `BestCheckpointSummary`, `discover_checkpoints()`, `rank_checkpoints()`, `find_best_checkpoint()` |
 | Track the experiment | `training/tracking.py`, `training/plotting.py` | `ExperimentTracker`, `relocate_mlflow_store()`, `plot_training_curves()`, `plot_step_dynamics()` |
-| Translate | `inference/translator.py`, `api/app.py`, `api/registry.py` | `Translator.from_checkpoint()`, `translate()`, `beam_search()`, `stream_greedy()`, `create_app()`, `ModelRegistry.translator_for()` |
+| Translate | `inference/translator.py`, `api/app.py`, `api/registry.py` | `Translator.from_best_run()`, `Translator.from_checkpoint()`, `translate()`, `beam_search()`, `stream_greedy()`, `create_app()`, `ModelRegistry.translator_for()` |

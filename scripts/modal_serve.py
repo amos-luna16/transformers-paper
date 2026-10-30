@@ -2,9 +2,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
-
-from pydantic import BaseModel, Field
 
 from transformer_nmt.config import Settings, get_settings
 
@@ -34,87 +31,29 @@ image = (
 )
 
 
-class TranslationRequest(BaseModel):
-    """Body of ``POST /translate``."""
-
-    text: str | list[str] = Field(description="One English sentence or a list of sentences.")
-    beam_size: int = Field(default=4, ge=1, le=10, description="1 = greedy, >1 = beam search.")
-    length_penalty: float = Field(default=0.6, ge=0.0, le=2.0)
-
-
-class TranslationResponse(BaseModel):
-    """Body returned by ``POST /translate``."""
-
-    translations: list[str]
-    checkpoint: str
-    device: str
-
-
 @app.cls(
     image=image,
     gpu=settings.modal.inference_gpu,
     volumes={str(settings.modal.volume_mount_path): volume},
     scaledown_window=settings.modal.inference_scaledown_seconds,
-    timeout=120,
+    timeout=300,
 )
 @modal.concurrent(max_inputs=16)
 class TranslationService:
-    """Hosted translation API that serves the best checkpoint stored on the Modal Volume."""
+    """Hosts the same FastAPI inference app as ``uv run fastapi dev``, backed by the Volume.
+
+    Routes: ``GET /health``, ``GET /models``, ``POST /models/select``, ``POST /translate``,
+    ``POST /translate/stream`` and the OpenAPI UI at ``/docs``.
+    """
 
     @modal.enter()
-    def load_model(self) -> None:
-        """Load the best checkpoint once per container."""
-        import torch
-
-        from transformer_nmt.inference.translator import Translator
-        from transformer_nmt.training.checkpoint import find_best_checkpoint
-
+    def refresh_volume(self) -> None:
+        """Make sure the container sees the latest committed runs."""
         volume.reload()
-        self.checkpoint_path = find_best_checkpoint(VOLUME_ARTIFACTS_DIR / "checkpoints")
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.translator = Translator.from_checkpoint(
-            self.checkpoint_path, self.device, max_decode_len=settings.inference.max_decode_len
-        )
-        device_name = torch.cuda.get_device_name(0) if self.device.type == "cuda" else "cpu"
-        print(f"[api] serving {self.checkpoint_path} on {device_name}", flush=True)
 
-    @modal.fastapi_endpoint(method="POST", docs=True)
-    def translate(self, request: TranslationRequest) -> TranslationResponse:
-        """Translate one or many English sentences into French."""
-        sentences = [request.text] if isinstance(request.text, str) else request.text
-        if request.beam_size == 1:
-            translations = self.translator.translate_batch(sentences)
-        else:
-            translations = [
-                self.translator.translate(
-                    sentence, beam_size=request.beam_size, length_penalty=request.length_penalty
-                )
-                for sentence in sentences
-            ]
-        return TranslationResponse(
-            translations=translations,
-            checkpoint=str(self.checkpoint_path.relative_to(settings.modal.volume_mount_path)),
-            device=str(self.device),
-        )
+    @modal.asgi_app()
+    def web(self):  # noqa: ANN201 - FastAPI app
+        """Create the ASGI app scanning the checkpoints persisted on the Volume."""
+        from transformer_nmt.api.app import create_app
 
-    @modal.fastapi_endpoint(method="GET")
-    def health(self) -> dict[str, Any]:
-        """Liveness probe reporting the checkpoint in use."""
-        return {"status": "ok", "checkpoint": str(self.checkpoint_path), "device": str(self.device)}
-
-
-@app.local_entrypoint()
-def main(text: str = "I love this movie.", beam_size: int = 4) -> None:
-    """Send one request to the (ephemeral or deployed) endpoint to verify it end to end."""
-    import json
-    import urllib.request
-
-    url = TranslationService().translate.get_web_url()
-    payload = json.dumps({"text": text, "beam_size": beam_size}).encode("utf-8")
-    request = urllib.request.Request(
-        url, data=payload, headers={"Content-Type": "application/json"}
-    )
-    with urllib.request.urlopen(request, timeout=300) as response:
-        print(
-            f"POST {url}\n{json.dumps(json.loads(response.read()), indent=2, ensure_ascii=False)}"
-        )
+        return create_app(models_root=VOLUME_ARTIFACTS_DIR / "checkpoints")

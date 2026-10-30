@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 import torch
@@ -204,8 +204,15 @@ class Translator:
                 else:
                     next_sequences.append(hypothesis)
                     next_scores.append(score)
-            if len(finished) >= beam_size or not next_sequences:
+            finished = sorted(finished, key=lambda item: item[0], reverse=True)[:beam_size]
+            if not next_sequences:
                 break
+            if len(finished) >= beam_size:
+                # Stop once no alive beam can still beat the worst kept finished hypothesis.
+                generated_len = len(next_sequences[0]) - 1
+                best_alive = max(next_scores) / _length_penalty(generated_len, length_penalty)
+                if finished[-1][0] >= best_alive:
+                    break
             sequences = torch.tensor(next_sequences, dtype=torch.long, device=self.device)
             scores = torch.tensor(next_scores, device=self.device)
         else:
@@ -216,6 +223,29 @@ class Translator:
             )
         _, best = max(finished, key=lambda item: item[0])
         return best[1:]
+
+    @torch.no_grad()
+    def stream_greedy(self, sentence: str) -> Iterator[str]:
+        """Greedy-decode ``sentence`` and yield each target token as soon as it is produced.
+
+        Args:
+            sentence: Source sentence.
+
+        Yields:
+            Target tokens in generation order (``<eos>`` is consumed, not yielded).
+        """
+        source = self._encode_source(sentence)
+        if source is None:
+            return
+        memory, memory_mask = self.model.encode(source)
+        generated = [self.target_vocab.sos_index]
+        for _ in range(self.max_decode_len):
+            target = torch.tensor([generated], dtype=torch.long, device=self.device)
+            next_token = int(self.model.decode(target, memory, memory_mask)[0, -1].argmax())
+            if next_token == self.target_vocab.eos_index:
+                break
+            generated.append(next_token)
+            yield self.target_vocab.index_to_token(next_token)
 
     def translate(self, sentence: str, *, beam_size: int = 4, length_penalty: float = 0.6) -> str:
         """Translate one sentence.

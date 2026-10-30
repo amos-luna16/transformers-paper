@@ -5,6 +5,7 @@ from transformer_nmt.data.dataset import (
     PadCollator,
     TranslationDataset,
     build_dataloader,
+    deduplicate_pairs,
     load_sentence_pairs,
     normalize_and_filter_pairs,
     split_pairs,
@@ -23,6 +24,21 @@ def test_normalize_and_filter_pairs_respects_length_budget(tokenizer):
     pairs = [("Go.", "Va !"), ("one two three four five", "un deux trois"), ("", "vide")]
     kept = normalize_and_filter_pairs(pairs, tokenizer, max_seq_len=4)
     assert kept == [("go .", "va !")]
+
+
+def test_normalize_and_filter_pairs_drops_zero_token_sides(tokenizer):
+    assert normalize_and_filter_pairs([("'", "oui ."), ("5 × 3", "quinze .")], tokenizer, 40) == []
+
+
+def test_deduplicate_pairs_keeps_first_occurrence():
+    assert deduplicate_pairs([("a", "b"), ("c", "d"), ("a", "b")]) == [("a", "b"), ("c", "d")]
+
+
+def test_split_pairs_keeps_all_translations_of_a_source_on_one_side():
+    pairs = [(f"src{i}", f"tgt{i}-{j}") for i in range(50) for j in range(3)]
+    train, validation = split_pairs(pairs, 0.2, seed=3)
+    assert len(train) + len(validation) == len(pairs) and len(validation) == 30
+    assert not {src for src, _ in train} & {src for src, _ in validation}
 
 
 def test_split_pairs_is_deterministic_and_disjoint():

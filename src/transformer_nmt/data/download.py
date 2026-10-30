@@ -57,9 +57,7 @@ def download_file(url: str, destination: Path, *, timeout_seconds: int = 120) ->
             shutil.copyfileobj(response, handle)
 
     _write_atomically(destination, fetch)
-    logger.info(
-        "Downloaded %s -> %s (%.1f MB)", url, destination, destination.stat().st_size / 1e6
-    )
+    logger.info("Downloaded %s -> %s (%.1f MB)", url, destination, destination.stat().st_size / 1e6)
     return destination
 
 

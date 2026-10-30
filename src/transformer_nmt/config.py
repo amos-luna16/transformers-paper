@@ -217,6 +217,13 @@ class InferenceSettings(BaseSettings):
     beam_size: int = Field(default=4, ge=1, description="1 selects greedy decoding.")
     max_decode_len: int = Field(default=40, ge=2)
     length_penalty: float = Field(default=0.6, ge=0.0, description="Beam-search length penalty.")
+    models_root: Path | None = Field(
+        default=None,
+        description="Directory scanned for run checkpoints; defaults to the artifacts directory.",
+    )
+    autoload_best_model: bool = Field(
+        default=True, description="Load the best available run when the API starts."
+    )
 
 
 class ModalSettings(BaseSettings):

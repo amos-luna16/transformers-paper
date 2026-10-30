@@ -39,6 +39,18 @@ def test_attention_fast_path_matches_reference_and_respects_mask():
     assert torch.allclose(weights.sum(-1), torch.ones(2, 4, 5))
 
 
+def test_attention_paths_agree_on_fully_masked_rows():
+    torch.manual_seed(0)
+    attention = MultiHeadAttention(d_model=16, num_heads=4).eval()
+    x = torch.randn(2, 3, 16)
+    mask = torch.ones(2, 1, 1, 3, dtype=torch.bool)
+    mask[1] = False  # second batch row has no attendable key at all
+    fast, _ = attention(x, x, x, mask)
+    reference, weights = attention(x, x, x, mask, return_weights=True)
+    assert torch.isfinite(reference).all() and torch.allclose(fast, reference, atol=1e-5)
+    assert weights is not None and torch.all(weights[1] == 0)
+
+
 @pytest.fixture
 def small_config() -> ModelSettings:
     return ModelSettings(
@@ -95,16 +107,20 @@ def test_post_norm_variant_runs(small_config):
 def test_greedy_decode_stops_at_eos_and_pads(small_config):
     model = Seq2SeqTransformer(20, 30, small_config, pad_index=0).eval()
 
-    def always_eos(target_tokens, memory, memory_mask):
+    def staggered_eos(target_tokens, memory, memory_mask):
+        step = target_tokens.size(1)  # decoder input length == 1-based decoding step
         logits = torch.zeros(target_tokens.size(0), target_tokens.size(1), 30)
-        logits[..., 3] = 1.0
+        logits[0, -1, 3 if step == 1 else 7] = 1.0  # row 0 finishes immediately
+        logits[1, -1, 3 if step == 3 else 7] = 1.0  # row 1 finishes on step 3
         return logits
 
-    model.decode = always_eos  # type: ignore[method-assign]
+    model.train()
+    model.decode = staggered_eos  # type: ignore[method-assign]
     generated = model.greedy_decode(
         torch.randint(1, 20, (2, 5)), sos_index=2, eos_index=3, max_len=6
     )
-    assert generated.shape == (2, 1) and torch.all(generated == 3)
+    assert generated.tolist() == [[3, 0, 0], [7, 7, 3]]  # pad after <eos>, stop before max_len
+    assert model.training  # mode restored
 
 
 def test_sequence_longer_than_positional_table_raises(small_config):

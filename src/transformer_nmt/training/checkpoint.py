@@ -129,6 +129,90 @@ def load_checkpoint(path: Path, map_location: str | torch.device = "cpu") -> dic
     return torch.load(path, map_location=map_location, weights_only=True)
 
 
+@dataclass(frozen=True)
+class CheckpointCandidate:
+    """A run directory with a usable best checkpoint."""
+
+    summary: BestCheckpointSummary
+    run_dir: Path
+
+    @property
+    def checkpoint_path(self) -> Path:
+        """Path of the run's best checkpoint."""
+        return self.run_dir / self.summary.checkpoint_file
+
+
+def discover_checkpoints(search_root: Path) -> list[CheckpointCandidate]:
+    """Collect every run below ``search_root`` whose ``best.json`` sits next to its checkpoint.
+
+    Copies that MLflow logs under ``mlartifacts`` have no weights beside them and are skipped.
+
+    Args:
+        search_root: Directory searched recursively (for example ``artifacts/``).
+
+    Returns:
+        Candidates in path order.
+    """
+    candidates: list[CheckpointCandidate] = []
+    for sidecar in sorted(search_root.rglob(BEST_SUMMARY_NAME)):
+        summary = BestCheckpointSummary.load(sidecar)
+        if (sidecar.parent / summary.checkpoint_file).exists():
+            candidates.append(CheckpointCandidate(summary, sidecar.parent))
+    return candidates
+
+
+def rank_checkpoints(
+    candidates: Sequence[CheckpointCandidate],
+    *,
+    exclude: Sequence[str] = (SMOKE_RUN_TYPE,),
+    metric: str | None = None,
+) -> list[CheckpointCandidate]:
+    """Order candidates best-first on a single selection metric.
+
+    Smoke runs, identified by the sidecar's ``run_type`` or by a run name containing one of
+    ``exclude``, are dropped unless nothing else exists because their validation sets differ.
+    Only runs selected with the same metric are comparable: ``metric`` picks it, otherwise the
+    single metric present is used.
+
+    Args:
+        candidates: Discovered checkpoints.
+        exclude: Substrings identifying smoke runs by name (fallback for old sidecars).
+        metric: Selection metric to compare, for example ``"val/loss"``.
+
+    Returns:
+        Candidates sorted best-first.
+
+    Raises:
+        ValueError: If runs with different selection metrics exist and ``metric`` is not given.
+    """
+    full_runs = [
+        candidate
+        for candidate in candidates
+        if candidate.summary.run_type != SMOKE_RUN_TYPE
+        and not any(marker in candidate.summary.run_name for marker in exclude)
+    ]
+    pool = list(full_runs or candidates)
+    by_metric: dict[str, list[CheckpointCandidate]] = {}
+    for candidate in pool:
+        by_metric.setdefault(candidate.summary.metric, []).append(candidate)
+    if not by_metric:
+        return []
+    if metric in by_metric:
+        pool = by_metric[metric]
+    elif len(by_metric) == 1:
+        pool = next(iter(by_metric.values()))
+    else:
+        raise ValueError(
+            f"Runs were selected with different metrics {sorted(by_metric)}; pass metric=..."
+        )
+
+    def sort_key(candidate: CheckpointCandidate) -> float:
+        summary = candidate.summary
+        return summary.value if summary.minimize else -summary.value
+
+    return sorted(pool, key=sort_key)
+
+
 def find_best_checkpoint(
     search_root: Path,
     *,
@@ -137,11 +221,7 @@ def find_best_checkpoint(
 ) -> Path:
     """Locate the best checkpoint across all runs below ``search_root``.
 
-    Every run directory carries a ``best.json`` sidecar whose checkpoint must exist next to it
-    (copies that MLflow logs under ``mlartifacts`` are therefore ignored). Smoke runs, identified
-    by the sidecar's ``run_type`` or by a run name containing one of ``exclude``, are skipped
-    unless nothing else exists because their validation sets differ. Runs are only compared on
-    the same selection metric: ``metric`` picks it, otherwise the single metric present is used.
+    See :func:`discover_checkpoints` and :func:`rank_checkpoints` for the rules applied.
 
     Args:
         search_root: Directory searched recursively (for example ``artifacts/``).
@@ -155,43 +235,17 @@ def find_best_checkpoint(
         FileNotFoundError: If no usable sidecar exists below ``search_root``.
         ValueError: If runs with different selection metrics exist and ``metric`` is not given.
     """
-    candidates: list[tuple[BestCheckpointSummary, Path]] = []
-    for sidecar in sorted(search_root.rglob(BEST_SUMMARY_NAME)):
-        summary = BestCheckpointSummary.load(sidecar)
-        if (sidecar.parent / summary.checkpoint_file).exists():
-            candidates.append((summary, sidecar.parent))
-    if not candidates:
+    ranked = rank_checkpoints(discover_checkpoints(search_root), exclude=exclude, metric=metric)
+    if not ranked:
         raise FileNotFoundError(
             f"No '{BEST_SUMMARY_NAME}' with an existing checkpoint found under {search_root}"
         )
-
-    full_runs = [
-        candidate
-        for candidate in candidates
-        if candidate[0].run_type != SMOKE_RUN_TYPE
-        and not any(marker in candidate[0].run_name for marker in exclude)
-    ]
-    candidates = full_runs or candidates
-
-    by_metric: dict[str, list[tuple[BestCheckpointSummary, Path]]] = {}
-    for candidate in candidates:
-        by_metric.setdefault(candidate[0].metric, []).append(candidate)
-    if metric in by_metric:
-        candidates = by_metric[metric]
-    elif len(by_metric) == 1:
-        candidates = next(iter(by_metric.values()))
-    else:
-        raise ValueError(
-            f"Runs under {search_root} were selected with different metrics {sorted(by_metric)}; "
-            "pass metric=... to choose one"
-        )
-
-    def sort_key(candidate: tuple[BestCheckpointSummary, Path]) -> float:
-        summary = candidate[0]
-        return summary.value if summary.minimize else -summary.value
-
-    best, run_dir = min(candidates, key=sort_key)
+    best = ranked[0]
     logger.info(
-        "Best checkpoint: run=%s %s=%.4f (%s)", best.run_name, best.metric, best.value, run_dir
+        "Best checkpoint: run=%s %s=%.4f (%s)",
+        best.summary.run_name,
+        best.summary.metric,
+        best.summary.value,
+        best.run_dir,
     )
-    return run_dir / best.checkpoint_file
+    return best.checkpoint_path

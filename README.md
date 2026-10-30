@@ -5,6 +5,9 @@ A from-scratch PyTorch implementation of the encoder-decoder Transformer from *A
 runs on Modal GPUs with PyTorch DistributedDataParallel and bf16 mixed precision; every experiment is
 tracked in MLflow with checkpoints, metrics, plots and hardware metadata.
 
+A plain-English walkthrough of how every file, Modal, MLflow and the API connect (with sequence
+diagrams) lives in [docs/workflow.md](docs/workflow.md).
+
 ## Project layout
 
 ```
@@ -14,13 +17,14 @@ src/transformer_nmt/
   model/             masks, multi-head attention (SDPA), encoder, decoder, Seq2SeqTransformer
   training/          trainer (AMP + DDP), Noam/cosine schedules, metrics (loss, ppl, accuracy, BLEU),
                      checkpoints, MLflow tracker, plots
-  inference/         Translator: greedy and beam-search decoding from a checkpoint
+  inference/         Translator: greedy, beam-search and token-streaming decoding from a checkpoint
+  api/               FastAPI inference service: health, model listing/selection, translate, SSE stream
   utils/             seeding, logging, hardware introspection
 scripts/
   train.py           training entry point (single process or under torchrun)
   translate.py       CLI inference with the best checkpoint found under artifacts/
   modal_train.py     Modal layer: builds the image, runs torchrun on N GPUs, syncs results back
-  modal_serve.py     Modal web API serving the best checkpoint (FastAPI endpoint)
+  modal_serve.py     hosts the same FastAPI app on a Modal GPU, reading checkpoints from the Volume
 tests/               pytest suite (data, model, schedules, metrics, checkpoints, tracking, end to end)
 artifacts/           data cache, checkpoints, plots, MLflow store (git-ignored)
 ```
@@ -33,7 +37,7 @@ payment method.
 ```bash
 uv sync                      # creates .venv and installs the locked dependencies
 cp .env.example .env         # then fill in your Modal tokens
-uv run pytest                # 60 unit and integration tests, CPU only, ~1 min
+uv run pytest                # 83 unit and integration tests, CPU only, ~2 min
 ```
 
 `.env` must contain `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` and `MODAL_PROFILE`
@@ -51,13 +55,17 @@ the Modal container.
 | `MODEL_` | architecture | `MODEL_D_MODEL=256`, `MODEL_NUM_HEADS=8`, `MODEL_NUM_ENCODER_LAYERS=3`, `MODEL_NORM_FIRST=true` |
 | `TRAINING_` | optimisation | `TRAINING_EPOCHS=25`, `TRAINING_BATCH_SIZE=128`, `TRAINING_PRECISION=auto`, `TRAINING_WARMUP_STEPS=2000` |
 | `TRACKING_` | artifacts and MLflow | `TRACKING_ARTIFACTS_DIR=artifacts`, `TRACKING_EXPERIMENT_NAME=transformer-nmt-eng-fra` |
-| `INFERENCE_` | decoding | `INFERENCE_BEAM_SIZE=4`, `INFERENCE_MAX_DECODE_LEN=40` |
+| `INFERENCE_` | decoding and API | `INFERENCE_BEAM_SIZE=4`, `INFERENCE_MAX_DECODE_LEN=40`, `INFERENCE_MODELS_ROOT=artifacts`, `INFERENCE_AUTOLOAD_BEST_MODEL=true` |
 | `MODAL_` | compute | `MODAL_GPU=A100-40GB`, `MODAL_GPU_COUNT=2`, `MODAL_INFERENCE_GPU=T4` |
 
 Defaults follow the paper where it makes sense for a 135k-pair corpus: d_model 256, 8 heads, 3+3 layers,
 FFN 512, dropout 0.1, sinusoidal positions, tied target embeddings, label smoothing 0.1, AdamW
 (β=(0.9, 0.98), ε=1e-9) with the Noam warm-up/inverse-sqrt schedule, gradient clipping at 1.0.
 Pre-LayerNorm blocks are the default (`MODEL_NORM_FIRST=false` gives the paper's Post-LN).
+
+Data: the Tatoeba file is normalised (lower-case, accents and `œ` kept, punctuation split), exact
+duplicates are dropped, and the 90/10 split is **grouped by English sentence** so none of the many
+sources with several French translations leaks from training into validation.
 
 ## Training on Modal
 
@@ -68,13 +76,15 @@ uv run --env-file .env modal run scripts/modal_train.py --smoke
 # 2. full run, detached so it survives a closed laptop
 uv run --env-file .env modal run --detach scripts/modal_train.py --epochs 25
 
-# follow logs of a detached run
+# follow logs of a detached run, then fetch its results without training again
 uv run --env-file .env modal app logs -f transformer-nmt
+uv run --env-file .env modal run scripts/modal_train.py --no-train
 ```
 
 `scripts/modal_train.py` builds the image from `pyproject.toml`/`uv.lock` (`Image.uv_sync`), mounts the
 package, launches `torchrun --standalone --nproc_per_node=$MODAL_GPU_COUNT scripts/train.py` and persists
-the SQLite MLflow store, run artifacts, checkpoints and plots to the `transformer-nmt-artifacts` Volume.
+the SQLite MLflow store, run artifacts, checkpoints and plots to the `transformer-nmt-artifacts` Volume
+(also on failure, under an account-wide lock so concurrent runs cannot clobber the store).
 When the run finishes the local entrypoint downloads everything to `artifacts/modal/` and rewrites the
 MLflow artifact URIs so the UI works locally:
 
@@ -132,8 +142,9 @@ Each run creates an MLflow run named like `20261030-1950-a100-sxm4-40gb-bf16-bs2
 - **params**: every settings field, dataset statistics (pairs, vocab sizes, lengths), model parameter count,
   hardware (GPU name, VRAM, CUDA/cuDNN/torch versions, host), world size, steps per epoch;
 - **tags**: project, task, language pair, run type, launcher, device, precision, git commit;
-- **metrics per step**: `train/step_loss`, `train/learning_rate`, `train/grad_norm`, `train/tokens_per_second`;
-- **metrics per epoch**: `train/loss` (label-smoothed), `val/loss` (NLL), `val/perplexity`,
+- **metrics per optimizer step** (`step/*`): loss, learning rate, gradient norm, tokens/s;
+- **metrics per epoch** (`train/*`, `val/*`): `train/loss` (label-smoothed), `train/grad_norm`,
+  `train/skipped_steps` (fp16 overflow steps), `val/loss` (NLL), `val/perplexity`,
   `val/token_accuracy`, `val/bleu` (sacreBLEU, greedy decoding of 500 validation sentences), epoch time,
   `system/peak_memory_gb`, plus MLflow system metrics (CPU, RAM, GPU utilisation and memory);
 - **artifacts**: `best.pt`, `settings.json`, both vocabularies, `history.json/csv`, step records, sample
@@ -144,55 +155,93 @@ a `best.json` sidecar that the inference tools use to pick the best run.
 
 ## Inference
 
+### FastAPI service (recommended)
+
+The API lives in `src/transformer_nmt/api/` and is registered as the FastAPI entrypoint in
+`pyproject.toml`, so the [FastAPI CLI](https://fastapi.tiangolo.com/fastapi-cli/) needs no arguments:
+
 ```bash
-# best checkpoint under artifacts/ (smoke runs are ignored when a full run exists)
+uv run fastapi dev            # http://127.0.0.1:8000, auto-reload, docs at /docs
+uv run fastapi run --port 8000   # production mode, binds 0.0.0.0
+```
+
+On startup it scans `INFERENCE_MODELS_ROOT` (default `artifacts/`, so both local and Modal-synced runs
+are found), ranks the runs by their recorded validation metric and loads the best non-smoke one.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/health` | device, GPU name, number of runs found, active model |
+| GET | `/models` | every run with `run_name`, metric, value, epoch, checkpoint path, best first |
+| POST | `/models/select` | `{"run_name": "..."}` loads that run for all following requests |
+| POST | `/translate` | `{"text": "...", "beam_size": 4, "length_penalty": 0.6}` → one translation |
+| POST | `/translate/stream` | `{"text": "..."}` → server-sent events, one `data: {"token": ...}` per token, then `event: done` |
+
+```bash
+curl -s localhost:8000/health
+curl -s localhost:8000/models
+curl -s -X POST localhost:8000/models/select -H 'Content-Type: application/json' \
+     -d '{"run_name": "20261030-1947-a100-sxm4-40gb-bf16-bs256-full"}'
+curl -s -X POST localhost:8000/translate -H 'Content-Type: application/json' \
+     -d '{"text": "I would like a cup of coffee, please.", "beam_size": 4}'
+curl -N -X POST localhost:8000/translate/stream -H 'Content-Type: application/json' \
+     -d '{"text": "She promised to call me tomorrow."}'
+```
+
+Requests sent before a model is selected (or when `INFERENCE_AUTOLOAD_BEST_MODEL=false`) return `409`.
+
+### Command line
+
+```bash
 uv run python scripts/translate.py "I love this movie." "Where is the train station?"
 uv run python scripts/translate.py --beam-size 1 --checkpoint artifacts/modal/checkpoints/<run>/best.pt
 uv run python scripts/translate.py            # interactive mode
 ```
 
-Hosted API on Modal (loads the best checkpoint from the Volume on a `MODAL_INFERENCE_GPU`):
+### Hosted on Modal
+
+`scripts/modal_serve.py` serves the very same FastAPI app from a `MODAL_INFERENCE_GPU` container that
+scans the checkpoints persisted on the Volume:
 
 ```bash
-uv run --env-file .env modal deploy scripts/modal_serve.py
-curl -X POST "$TRANSLATE_URL" -H "Content-Type: application/json" \
-     -d '{"text": ["I love this movie.", "Where is the station?"], "beam_size": 4}'
+uv run --env-file .env modal deploy scripts/modal_serve.py   # prints the public URL
+curl -s "$URL/health"; curl -s "$URL/models"
+curl -s -X POST "$URL/translate" -H "Content-Type: application/json" -d '{"text": "Good morning."}'
 ```
-
-`modal deploy` prints the endpoint URLs (`.../translate` and `.../health`; `/translate/docs` serves the
-OpenAPI UI). `uv run --env-file .env modal run scripts/modal_serve.py --text "Good morning."` spins up an
-ephemeral copy and sends one request.
 
 ## Results
 
-Final run `20261030-1947-a100-sxm4-40gb-bf16-bs256-full`: 2× NVIDIA A100-SXM4-40GB on Modal, DDP with
-2 ranks, bf16 autocast, global batch 256, 25 epochs (11,950 optimizer steps, 478 per epoch), 9.95M
-parameters, 122,251 training pairs / 13,584 validation pairs, vocabularies 8,735 (EN) and 14,681 (FR).
+Final run `20261030-2020-a100-sxm4-40gb-bf16-bs256-full`: 2× NVIDIA A100-SXM4-40GB on Modal, DDP with
+2 ranks, bf16 autocast, global batch 256, 25 epochs (11,925 optimizer steps, 477 per epoch), 9.95M
+parameters, 122,048 training pairs / 13,561 validation pairs (source-grouped split, 226 duplicates
+removed), vocabularies 8,720 (EN) and 14,700 (FR).
 
-| Metric (validation, 13.6k pairs) | Value |
+| Metric (validation, 13.6k pairs, no source overlap with training) | Value |
 |---|---|
-| Best NLL loss (epoch 22, `best.pt`) | 0.974 |
-| Perplexity | 2.6 |
-| Token accuracy | 0.80 |
-| sacreBLEU, greedy, 500-sentence subset (best epoch 14 / final) | 45.2 / 44.5 |
-| Training throughput | ~79k target tokens/s |
-| Wall time for 25 epochs (excluding validation) | 5.6 min |
+| Best NLL loss (epoch 13, `best.pt`) | 1.112 |
+| Perplexity at the best epoch | 3.0 |
+| Token accuracy at the best epoch | 0.77 |
+| sacreBLEU, greedy, 500-sentence subset (best epoch 17 / final epoch) | 44.5 / 42.7 |
+| Training throughput | ~61k target tokens/s |
+| Wall time for 25 epochs (excluding validation) | 7.3 min |
 | Peak GPU memory per rank | 1.5 GB |
 
-Validation loss plateaus after epoch 17 while training loss keeps falling, so the default of saving
+Validation loss plateaus after epoch 13 while training loss keeps falling, so the default of saving
 `best.pt` on validation loss (and the optional `TRAINING_EARLY_STOPPING_PATIENCE`) matters more than
-extra epochs. Sample outputs from the best checkpoint (beam size 4):
+extra epochs. An earlier run with a plain random split reached a lower validation loss (0.97) only
+because thousands of English sentences with several French translations appeared on both sides; its
+checkpoints were removed so that `GET /models` only ranks runs trained on comparable data.
+
+Sample outputs from the best checkpoint (beam size 4):
 
 | English | Model output |
 |---|---|
 | I love this movie. | j'adore ce film. |
 | Where is the train station? | où se trouve la gare? |
 | She promised to call me tomorrow. | elle a promis de m'appeler demain. |
-| Could you help me, please? | pourriez vous m'aider s'il vous plait? |
+| I would like a cup of coffee, please. | j'aimerais une tasse de café je vous prie. |
 
-The deployed Modal API lives at
-`https://amos-luna-16--transformer-nmt-api-translationservice-translate.us-east.modal.run`
-(`.../health` for the probe); the training function is deployed as app `transformer-nmt`.
+Deployed Modal apps: `transformer-nmt` (function `train_on_gpu`) and `transformer-nmt-api`
+(FastAPI service at `https://amos-luna-16--transformer-nmt-api-translationservice-web.us-east.modal.run`).
 
 ## Reference
 

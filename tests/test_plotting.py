@@ -20,10 +20,7 @@ def test_plots_are_written(tmp_path):
         )
     curves = plot_training_curves(history, tmp_path / "plots" / "curves.png", title="test")
     dynamics = plot_step_dynamics(
-        [
-            {"step": s, "train/step_loss": 3.0 / s, "train/learning_rate": 1e-4 * s}
-            for s in (1, 2, 3)
-        ],
+        [{"step": s, "step/loss": 3.0 / s, "step/learning_rate": 1e-4 * s} for s in (1, 2, 3)],
         tmp_path / "plots" / "steps.png",
         title="test",
     )

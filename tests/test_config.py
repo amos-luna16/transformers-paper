@@ -84,3 +84,21 @@ def test_credential_environment_only_contains_present_values(monkeypatch):
     monkeypatch.delenv("MODAL_TOKEN_ID")
     monkeypatch.delenv("MODAL_TOKEN_SECRET")
     assert ModalSettings(_env_file=None).credential_environment() == {}
+
+
+def test_with_overrides_rejects_unknown_keys():
+    with pytest.raises(ValueError, match="epcohs"):
+        Settings().with_overrides(training={"epcohs": 3})
+
+
+def test_best_metric_bleu_requires_bleu_samples():
+    with pytest.raises(ValidationError):
+        TrainingSettings(_env_file=None, best_metric="val/bleu", bleu_eval_samples=0)
+    with pytest.raises(ValidationError):
+        Settings().with_overrides(training={"best_metric": "val/bleu", "bleu_eval_samples": 0})
+
+
+def test_positional_table_must_cover_padded_sequences():
+    with pytest.raises(ValidationError):
+        Settings().with_overrides(data={"max_seq_len": 300})
+    assert Settings().with_overrides(data={"max_seq_len": 250}).data.max_seq_len == 250

@@ -51,9 +51,8 @@ def _isolate_environment(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
 
 
-@pytest.fixture
-def tiny_settings(tmp_path) -> Settings:
-    """Small, fast settings for CPU tests."""
+def make_tiny_settings(artifacts_dir) -> Settings:
+    """Small, fast settings for CPU tests writing under ``artifacts_dir``."""
     return Settings(
         data=DataSettings(
             _env_file=None,
@@ -86,7 +85,7 @@ def tiny_settings(tmp_path) -> Settings:
         ),
         tracking=TrackingSettings(
             _env_file=None,
-            artifacts_dir=tmp_path / "artifacts",
+            artifacts_dir=artifacts_dir,
             experiment_name="unit-tests",
             log_system_metrics=False,
         ),
@@ -95,19 +94,13 @@ def tiny_settings(tmp_path) -> Settings:
     )
 
 
-@pytest.fixture
-def tokenizer() -> WordTokenizer:
-    """Shared tokenizer."""
-    return WordTokenizer()
-
-
-@pytest.fixture
-def tiny_bundle(tiny_settings: Settings, tokenizer: WordTokenizer) -> DataBundle:
+def make_tiny_bundle(settings: Settings) -> DataBundle:
     """A DataBundle built from the in-memory tiny corpus."""
+    tokenizer = WordTokenizer()
     train_pairs, validation_pairs = TINY_PAIRS[:16], TINY_PAIRS[16:]
     source_vocab = Vocabulary.build((s for s, _ in TINY_PAIRS), tokenizer, 1)
     target_vocab = Vocabulary.build((t for _, t in TINY_PAIRS), tokenizer, 1)
-    max_len = tiny_settings.data.max_seq_len
+    max_len = settings.data.max_seq_len
     return DataBundle(
         tokenizer=tokenizer,
         source_vocab=source_vocab,
@@ -122,3 +115,21 @@ def tiny_bundle(tiny_settings: Settings, tokenizer: WordTokenizer) -> DataBundle
         validation_pairs=validation_pairs,
         statistics={"train_pairs": len(train_pairs), "validation_pairs": len(validation_pairs)},
     )
+
+
+@pytest.fixture
+def tiny_settings(tmp_path) -> Settings:
+    """Small, fast settings for CPU tests."""
+    return make_tiny_settings(tmp_path / "artifacts")
+
+
+@pytest.fixture
+def tokenizer() -> WordTokenizer:
+    """Shared tokenizer."""
+    return WordTokenizer()
+
+
+@pytest.fixture
+def tiny_bundle(tiny_settings: Settings) -> DataBundle:
+    """A DataBundle built from the in-memory tiny corpus."""
+    return make_tiny_bundle(tiny_settings)

@@ -544,11 +544,16 @@ class Trainer:
             for s, r, h in zip(sources, references, hypotheses, strict=True)
         ]
         self.tracker.log_dict(samples, SAMPLE_TRANSLATIONS_NAME)
+        source_name = self.settings.data.source_language
+        target_name = self.settings.data.target_language
         for sample in samples[:5]:
             logger.info(
-                "EN: %s | FR ref: %s | FR hyp: %s",
+                "%s: %s | %s ref: %s | %s hyp: %s",
+                source_name,
                 sample["source"],
+                target_name,
                 sample["reference"],
+                target_name,
                 sample["hypothesis"],
             )
 

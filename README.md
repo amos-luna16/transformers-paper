@@ -240,38 +240,40 @@ curl -s -X POST "$URL/translate" -H "Content-Type: application/json" \
 
 ## Results
 
-Final run `20261030-2020-a100-sxm4-40gb-bf16-bs256-full`: 2× NVIDIA A100-SXM4-40GB on Modal, DDP with
-2 ranks, bf16 autocast, global batch 256, 25 epochs (11,925 optimizer steps, 477 per epoch), 9.95M
-parameters, 122,048 training pairs / 13,561 validation pairs (source-grouped split, 226 duplicates
-removed), vocabularies 8,720 (EN) and 14,700 (FR).
+Three models, one per direction, all trained on Modal with DDP (2 ranks), bf16 autocast and a global
+batch of 256. Validation sets are source-grouped (no English sentence shared with training) and exact
+duplicates are removed before splitting. BLEU is sacreBLEU with greedy decoding on a 500-sentence
+validation subset.
 
-| Metric (validation, 13.6k pairs, no source overlap with training) | Value |
-|---|---|
-| Best NLL loss (epoch 13, `best.pt`) | 1.112 |
-| Perplexity at the best epoch | 3.0 |
-| Token accuracy at the best epoch | 0.77 |
-| sacreBLEU, greedy, 500-sentence subset (best epoch 17 / final epoch) | 44.5 / 42.7 |
-| Training throughput | ~61k target tokens/s |
-| Wall time for 25 epochs (excluding validation) | 7.3 min |
-| Peak GPU memory per rank | 1.5 GB |
+| Direction | Run | GPUs | Epochs | Pairs (train / val) | Vocab (src / tgt) | Best val loss (epoch) | Perplexity | Token acc. | BLEU at best / peak | Train time |
+|---|---|---|---|---|---|---|---|---|---|---|
+| English → French | `20261030-2020-a100-sxm4-40gb-bf16-bs256-full` | 2× A100-40GB | 25 | 122,048 / 13,561 | 8,720 / 14,700 | 1.112 (13) | 3.0 | 0.77 | 42.3 / 44.5 | 7.3 min |
+| English → Spanish | `20261030-2141-eng-spa-h100-80gb-hbm3-bf16-bs256-full` | 2× H100 80GB | 50 | 107,040 / 11,893 | 8,527 / 14,305 | 1.140 (12) | 3.1 | 0.77 | 41.8 / 46.6 | 10.2 min |
+| Spanish → English | `20261030-2156-spa-eng-h100-80gb-hbm3-bf16-bs256-full` | 2× H100 80GB | 50 | 107,040 / 11,893 | 14,333 / 8,515 | 0.965 (19) | 2.6 | 0.82 | 58.4 / 60.0 | 9.7 min |
 
-Validation loss plateaus after epoch 13 while training loss keeps falling, so the default of saving
-`best.pt` on validation loss (and the optional `TRAINING_EARLY_STOPPING_PATIENCE`) matters more than
-extra epochs. An earlier run with a plain random split reached a lower validation loss (0.97) only
+In every run the validation loss bottoms out between epochs 12 and 20 while BLEU keeps creeping up a
+little as the learning rate decays; `best.pt` (selected on validation loss) is what the API serves, and
+the extra epochs cost about 10 GPU-minutes per run. The two Spanish runs were started on A100s but no
+A100 pair was available at the time, so they ran on H100s (`MODAL_GPU=H100`); the model is
+latency-bound, so the H100s were only marginally faster (about 11.5 s per epoch versus 13.5 s).
+
+Sample outputs from the deployed API (beam size 4):
+
+| Direction | Input | Output |
+|---|---|---|
+| en → fr | I would like a cup of coffee, please. | j'aimerais une tasse de café s'il vous plaît. |
+| en → es | I would like a cup of coffee, please. | quisiera una taza de café por favor. |
+| en → es | She promised to call me tomorrow. | ella prometió llamarme mañana. |
+| es → en | Ella prometió llamarme mañana. | she promised to call me up tomorrow. |
+| es → en | No tenemos suficiente tiempo. | we don't have enough time. |
+
+An earlier English → French run with a plain random split reached a lower validation loss (0.97) only
 because thousands of English sentences with several French translations appeared on both sides; its
 checkpoints were removed so that `GET /models` only ranks runs trained on comparable data.
 
-Sample outputs from the best checkpoint (beam size 4):
-
-| English | Model output |
-|---|---|
-| I love this movie. | j'adore ce film. |
-| Where is the train station? | où se trouve la gare? |
-| She promised to call me tomorrow. | elle a promis de m'appeler demain. |
-| I would like a cup of coffee, please. | j'aimerais une tasse de café je vous prie. |
-
 Deployed Modal apps: `transformer-nmt` (function `train_on_gpu`) and `transformer-nmt-api`
-(FastAPI service at `https://amos-luna-16--transformer-nmt-api-translationservice-web.us-east.modal.run`).
+(FastAPI service at `https://amos-luna-16--transformer-nmt-api-translationservice-web.us-east.modal.run`,
+serving all three directions).
 
 ## Reference
 

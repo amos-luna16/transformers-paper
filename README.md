@@ -1,7 +1,8 @@
 # transformers-paper
 
 A from-scratch PyTorch implementation of the encoder-decoder Transformer from *Attention Is All You Need*
-(Vaswani et al., 2017), trained for English → French translation on the Tatoeba sentence pairs. Training
+(Vaswani et al., 2017), trained on Tatoeba sentence pairs for English → French, English → Spanish and
+Spanish → English translation (one model per direction). Training
 runs on Modal GPUs with PyTorch DistributedDataParallel and bf16 mixed precision; every experiment is
 tracked in MLflow with checkpoints, metrics, plots and hardware metadata.
 
@@ -37,7 +38,7 @@ payment method.
 ```bash
 uv sync                      # creates .venv and installs the locked dependencies
 cp .env.example .env         # then fill in your Modal tokens
-uv run pytest                # 83 unit and integration tests, CPU only, ~2 min
+uv run pytest                # 85 unit and integration tests, CPU only, ~2 min
 ```
 
 `.env` must contain `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` and `MODAL_PROFILE`
@@ -51,9 +52,9 @@ the Modal container.
 
 | Prefix | Section | Examples |
 |---|---|---|
-| `DATA_` | corpus and preprocessing | `DATA_MAX_PAIRS=150000`, `DATA_MAX_SEQ_LEN=40`, `DATA_MIN_TOKEN_FREQ=2` |
+| `DATA_` | corpus and preprocessing | `DATA_SOURCE_URL`, `DATA_ARCHIVE_MEMBER`, `DATA_SOURCE_LANGUAGE`, `DATA_TARGET_LANGUAGE`, `DATA_SWAP_PAIR_ORDER`, `DATA_MAX_SEQ_LEN=40` |
 | `MODEL_` | architecture | `MODEL_D_MODEL=256`, `MODEL_NUM_HEADS=8`, `MODEL_NUM_ENCODER_LAYERS=3`, `MODEL_NORM_FIRST=true` |
-| `TRAINING_` | optimisation | `TRAINING_EPOCHS=25`, `TRAINING_BATCH_SIZE=128`, `TRAINING_PRECISION=auto`, `TRAINING_WARMUP_STEPS=2000` |
+| `TRAINING_` | optimisation | `TRAINING_EPOCHS=50`, `TRAINING_BATCH_SIZE=128`, `TRAINING_PRECISION=auto`, `TRAINING_WARMUP_STEPS=2000` |
 | `TRACKING_` | artifacts and MLflow | `TRACKING_ARTIFACTS_DIR=artifacts`, `TRACKING_EXPERIMENT_NAME=transformer-nmt-eng-fra` |
 | `INFERENCE_` | decoding and API | `INFERENCE_BEAM_SIZE=4`, `INFERENCE_MAX_DECODE_LEN=40`, `INFERENCE_MODELS_ROOT=artifacts`, `INFERENCE_AUTOLOAD_BEST_MODEL=true` |
 | `MODAL_` | compute | `MODAL_GPU=A100-40GB`, `MODAL_GPU_COUNT=2`, `MODAL_INFERENCE_GPU=T4` |
@@ -80,6 +81,29 @@ uv run --env-file .env modal run --detach scripts/modal_train.py --epochs 25
 uv run --env-file .env modal app logs -f transformer-nmt
 uv run --env-file .env modal run scripts/modal_train.py --no-train
 ```
+
+### Training other language pairs
+
+The corpus, the direction and the experiment name are settings, so another Tatoeba pair is a matter of
+environment variables. The archives below share the format of the French one (`English<TAB>Other`):
+
+```bash
+# English -> Spanish (TensorFlow mirror of the Tatoeba/ManyThings pairs, 118,964 sentences)
+DATA_SOURCE_URL=https://storage.googleapis.com/download.tensorflow.org/data/spa-eng.zip \
+DATA_ARCHIVE_MEMBER=spa-eng/spa.txt DATA_TARGET_LANGUAGE=Spanish \
+TRACKING_EXPERIMENT_NAME=transformer-nmt-eng-spa \
+uv run --env-file .env modal run --detach scripts/modal_train.py --epochs 50
+
+# Spanish -> English: same file, columns swapped
+DATA_SOURCE_URL=https://storage.googleapis.com/download.tensorflow.org/data/spa-eng.zip \
+DATA_ARCHIVE_MEMBER=spa-eng/spa.txt DATA_SWAP_PAIR_ORDER=true \
+DATA_SOURCE_LANGUAGE=Spanish DATA_TARGET_LANGUAGE=English \
+TRACKING_EXPERIMENT_NAME=transformer-nmt-spa-eng \
+uv run --env-file .env modal run --detach scripts/modal_train.py --epochs 50
+```
+
+Run names carry the direction (`...-eng-spa-...`), each run's `settings.json` records the languages, and
+the inference API groups models by direction automatically.
 
 `scripts/modal_train.py` builds the image from `pyproject.toml`/`uv.lock` (`Image.uv_sync`), mounts the
 package, launches `torchrun --standalone --nproc_per_node=$MODAL_GPU_COUNT scripts/train.py` and persists
@@ -166,28 +190,32 @@ uv run fastapi run --port 8000   # production mode, binds 0.0.0.0
 ```
 
 On startup it scans `INFERENCE_MODELS_ROOT` (default `artifacts/`, so both local and Modal-synced runs
-are found), ranks the runs by their recorded validation metric and loads the best non-smoke one.
+are found), reads each run's language direction from its `settings.json`, ranks the runs of every
+direction by their recorded validation metric and loads the best non-smoke one per direction.
+Languages are two-letter codes (`en`, `es`, `fr`).
 
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/health` | device, GPU name, number of runs found, active model |
-| GET | `/models` | every run with `run_name`, metric, value, epoch, checkpoint path, best first |
-| POST | `/models/select` | `{"run_name": "..."}` loads that run for all following requests |
-| POST | `/translate` | `{"text": "...", "beam_size": 4, "length_penalty": 0.6}` → one translation |
-| POST | `/translate/stream` | `{"text": "..."}` → server-sent events, one `data: {"token": ...}` per token, then `event: done` |
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | `/health` | | device, GPU name, number of runs, the active model of each direction |
+| GET | `/languages` | | available directions with model counts and the active run |
+| GET | `/models` | | every run: `run_name`, `source_language`, `target_language`, metric, value, epoch, `run_type`, `active` |
+| POST | `/models/select` | `{"run_name"}` | loads that run and makes it active for its direction |
+| POST | `/translate` | `{"text", "source_language", "target_language", "beam_size"?}` | `{"translation", "model"}` |
+| POST | `/translate/stream` | `{"text", "source_language", "target_language"}` | server-sent events, one `data: {"token": ...}` per word, then `event: done` |
 
 ```bash
 curl -s localhost:8000/health
-curl -s localhost:8000/models
+curl -s localhost:8000/languages
 curl -s -X POST localhost:8000/models/select -H 'Content-Type: application/json' \
-     -d '{"run_name": "20261030-1947-a100-sxm4-40gb-bf16-bs256-full"}'
+     -d '{"run_name": "20261030-2020-a100-sxm4-40gb-bf16-bs256-full"}'
 curl -s -X POST localhost:8000/translate -H 'Content-Type: application/json' \
-     -d '{"text": "I would like a cup of coffee, please.", "beam_size": 4}'
+     -d '{"text": "I would like a cup of coffee, please.", "source_language": "en", "target_language": "es"}'
 curl -N -X POST localhost:8000/translate/stream -H 'Content-Type: application/json' \
-     -d '{"text": "She promised to call me tomorrow."}'
+     -d '{"text": "She promised to call me tomorrow.", "source_language": "es", "target_language": "en"}'
 ```
 
-Requests sent before a model is selected (or when `INFERENCE_AUTOLOAD_BEST_MODEL=false`) return `409`.
+A direction with no trained model answers `404`; with `INFERENCE_AUTOLOAD_BEST_MODEL=false` a direction
+whose model was not selected yet answers `409` until you call `/models/select`.
 
 ### Command line
 
@@ -204,8 +232,9 @@ scans the checkpoints persisted on the Volume:
 
 ```bash
 uv run --env-file .env modal deploy scripts/modal_serve.py   # prints the public URL
-curl -s "$URL/health"; curl -s "$URL/models"
-curl -s -X POST "$URL/translate" -H "Content-Type: application/json" -d '{"text": "Good morning."}'
+curl -s "$URL/health"; curl -s "$URL/languages"
+curl -s -X POST "$URL/translate" -H "Content-Type: application/json" \
+     -d '{"text": "Good morning.", "source_language": "en", "target_language": "fr"}'
 ```
 
 ## Results

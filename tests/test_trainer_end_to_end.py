@@ -14,9 +14,11 @@ from transformer_nmt.training.trainer import Trainer, generate_run_name
 
 
 def test_generate_run_name_slug():
-    name = generate_run_name("NVIDIA L40S", "bf16", 256, run_type="full")
-    assert name.endswith("-l40s-bf16-bs256-full")
-    assert generate_run_name("", "fp32", 8, run_type="smoke").endswith("-cpu-fp32-bs8-smoke")
+    name = generate_run_name("NVIDIA L40S", "bf16", 256, run_type="full", language_pair="eng-spa")
+    assert name.endswith("-eng-spa-l40s-bf16-bs256-full")
+    assert generate_run_name("", "fp32", 8, run_type="smoke").endswith(
+        "-eng-fra-cpu-fp32-bs8-smoke"
+    )
 
 
 def test_trainer_runs_end_to_end_and_translator_loads(tiny_settings, tiny_bundle):

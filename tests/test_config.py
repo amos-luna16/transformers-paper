@@ -48,6 +48,7 @@ def test_with_overrides_and_flat_dict_hide_secrets(monkeypatch):
 def test_smoke_variant_is_small():
     smoke = Settings().smoke_test_variant()
     assert smoke.training.epochs == 2 and smoke.data.max_pairs == 3000
+    assert Settings().training.epochs == 50
     assert smoke.tracking.experiment_name.endswith("-smoke")
 
 

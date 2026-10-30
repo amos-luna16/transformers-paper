@@ -22,7 +22,7 @@ If you only remember one thing: **everything starts from a settings file and end
 | MLflow | The lab notebook: a one-file database plus a folder of files recording every experiment (parameters, metrics per epoch, plots, best checkpoint). | `artifacts/mlflow.db` for laptop runs, `artifacts/modal/mlflow.db` for runs pulled from Modal |
 | Modal launcher | The courier: packages the code, rents GPUs on Modal, runs the training there and brings the results back. | `scripts/modal_train.py` |
 | Translator | Loads a saved checkpoint and translates sentences, optionally one word at a time. | `src/transformer_nmt/inference/translator.py` |
-| FastAPI service | A small web server with a health check, a list of trained models, a manual model selector and two translate endpoints (one normal, one streaming). | `src/transformer_nmt/api/` |
+| FastAPI service | A small web server with a health check, the list of language directions and trained models, a manual model selector and two translate endpoints (one normal, one streaming). One model serves each direction (English→French, English→Spanish, Spanish→English). | `src/transformer_nmt/api/` |
 | Modal API host | Runs that same web server on a Modal GPU, reading checkpoints from Modal's persistent disk. | `scripts/modal_serve.py` |
 
 Three storage locations matter, and the diagrams always say which one is acting:
@@ -340,10 +340,12 @@ and the Modal host:
    it stops with an error (`Runs were selected with different metrics ...`); the workaround is to pass
    `--checkpoint` or set `INFERENCE_CHECKPOINT_PATH`.
 
-The FastAPI service and the Modal host apply the same ranking through `ModelRegistry.candidates()`
-(`api/registry.py`) with two conveniences on top: the smoke runs set aside in step 2 are appended at
-the end so `GET /models` still lists every run, and if runs were selected with different yardsticks
-they are simply grouped by yardstick instead of raising an error.
+The FastAPI service and the Modal host apply the same ranking through `ModelRegistry.models()`
+(`api/registry.py`) with three additions: each run's language direction is read from its
+`settings.json` and the ranking is done per direction (`en→fr`, `en→es`, `es→en`), the smoke runs set
+aside in step 2 are appended at the end of their direction so `GET /models` still lists every run, and
+if runs were selected with different yardsticks they are grouped by yardstick instead of raising an
+error.
 
 One caveat to know about: MLflow keeps a second `best.json` + `best.pt` pair for each run under
 `mlartifacts/<experiment>/<run_id>/artifacts/checkpoints/` (uploaded in Flow B step 16 and downloaded
@@ -373,19 +375,20 @@ sequenceDiagram
     participant FS as artifacts/ folder
 
     S->>RG: ModelRegistry(models_root)
-    RG->>CK: discover and rank runs
+    RG->>CK: discover and rank runs per direction
     CK->>FS: read every best.json with weights beside it
-    RG->>TL: Translator.from_checkpoint(best run)
+    RG->>TL: Translator.from_checkpoint(best run of each direction)
     TL->>FS: read settings.json, vocabularies, best.pt
 ```
 
 1. When the server starts (FastAPI's "lifespan" hook), it creates a `ModelRegistry` pointing at the
    models folder: `INFERENCE_MODELS_ROOT` if set, otherwise `artifacts/`, which contains both laptop
    runs and the runs pulled from Modal.
-2. The registry asks `checkpoint.py` to discover and rank the runs (Section 6).
+2. The registry asks `checkpoint.py` to discover the runs, reads each run's language direction from
+   its `settings.json` and ranks the runs of every direction (Section 6).
 3. Only `best.json` cards that have their weights next to them count (see the caveat in Section 6).
-4. The best-ranked run is loaded immediately. Set `INFERENCE_AUTOLOAD_BEST_MODEL=false` to start with
-   no model and choose one by hand.
+4. The best-ranked run of every direction is loaded immediately. Set
+   `INFERENCE_AUTOLOAD_BEST_MODEL=false` to start with nothing loaded and choose by hand.
 5. Loading a run means reading its `settings.json` to rebuild the exact architecture, its two
    vocabularies, and the weights in `best.pt`. The model is placed on the best available device: an
    NVIDIA (CUDA) GPU, the Apple GPU, or the CPU.
@@ -400,38 +403,49 @@ sequenceDiagram
     participant TL as Translator
 
     User->>S: GET /health
-    S-->>User: device, GPU name, runs found, active model
+    S-->>User: device, GPU, runs found, active model per direction
+    User->>S: GET /languages
+    S-->>User: directions with model counts
     User->>S: GET /models
-    S-->>User: all runs, best first
+    S-->>User: all runs grouped by direction, best first
     User->>S: POST /models/select {run_name}
     S->>RG: select(run_name)
-    RG->>TL: load the chosen run
-    S-->>User: active model card
-    User->>S: POST /translate {text, beam_size}
+    RG->>TL: load the chosen run for its direction
+    S-->>User: model card
+    User->>S: POST /translate {text, source_language, target_language}
+    S->>RG: translator for that direction
     S->>TL: translate(text, beam_size)
-    TL-->>S: French sentence (beam search)
-    S-->>User: {text, translation, run_name, device}
-    User->>S: POST /translate/stream {text}
+    TL-->>S: translated sentence (beam search)
+    S-->>User: {translation, model}
+    User->>S: POST /translate/stream {text, source_language, target_language}
     S->>TL: stream_greedy(text)
     loop one token at a time
-        TL-->>S: next French word (greedy)
+        TL-->>S: next word (greedy)
         S-->>User: data: {"token": "..."}
     end
     S-->>User: event: done
 ```
 
-- `GET /health` tells you whether a model is loaded, on which device and GPU, how many runs were
-  found and which one is active. If the status is `no-model-selected`, the translate endpoints answer
-  with an HTTP error (409) saying that no model is selected.
-- `GET /models` lists every run (name, yardstick, value, best epoch, checkpoint path), best first, so
-  you can pick one by name.
-- `POST /models/select` with `{"run_name": "..."}` loads the chosen run; every following request uses
-  it. An unknown name returns a 404 error.
-- `POST /translate` cleans and tokenises your sentence exactly as training did, runs the encoder
-  once, then beam search in the decoder (`beam_size` 1 switches to greedy decoding), and returns one
-  sentence plus the run name and device that produced it.
-- `POST /translate/stream` uses greedy decoding and sends each French word as a server-sent event
-  the moment it is produced, ending with `event: done`.
+Languages are two-letter codes (`en`, `es`, `fr`). Every request body carries only what is needed:
+the sentence, the direction and, optionally, the beam size.
+
+- `GET /health` tells you the device and GPU, how many runs were found and which run is active for
+  each direction. The status is `no-model-selected` when nothing is loaded yet.
+- `GET /languages` lists the directions that have at least one trained model, how many, and the
+  active run of each. Use it to know what you can ask for.
+- `GET /models` lists every run (name, direction, yardstick, value, best epoch, run type, active flag),
+  grouped by direction and best first, so you can pick one by name.
+- `POST /models/select` with `{"run_name": "..."}` loads the chosen run and makes it the active model
+  for its own direction only. An unknown name returns a 404 error.
+- `POST /translate` with `{"text", "source_language", "target_language", "beam_size"}` picks the active
+  model of that direction (loading the best one on demand), cleans and tokenises your sentence exactly
+  as training did, runs the encoder once, then beam search in the decoder (`beam_size` 1 switches to
+  greedy decoding), and returns `{"translation", "model"}`: the sentence and the run that produced it.
+  A direction without any trained model returns 404; with autoload disabled, a direction whose model
+  was not selected yet returns 409.
+- `POST /translate/stream` with `{"text", "source_language", "target_language"}` uses greedy decoding
+  and sends each translated word as a server-sent event the moment it is produced, ending with
+  `event: done`.
 
 The interactive documentation at `/docs` lets you try every endpoint from a browser.
 
@@ -554,4 +568,7 @@ flowchart LR
   standard way a Python web app plugs into a web server, so "ASGI app" just means "the web service";
   the **lifespan** hook is where the app loads the model at startup. **SSE** (server-sent events) is
   the streaming format used by `/translate/stream`.
-- **HTTP 404 / 409**: error codes returned by the API for "unknown run name" and "no model selected".
+- **Language codes**: the API names languages with two letters (`en` English, `es` Spanish, `fr`
+  French), derived from the language names recorded in each run's settings.
+- **HTTP 404 / 409**: error codes returned by the API for "unknown run name or direction" and "no
+  model selected for this direction".

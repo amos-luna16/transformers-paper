@@ -81,14 +81,24 @@ class TrainingSummary:
         return asdict(self)
 
 
+def language_pair_slug(source_language: str, target_language: str) -> str:
+    """Short corpus-style tag for a language pair, e.g. ``eng-spa`` for English to Spanish."""
+    return f"{source_language[:3].lower()}-{target_language[:3].lower()}"
+
+
 def generate_run_name(
-    device_name: str, precision: str, global_batch_size: int, *, run_type: str
+    device_name: str,
+    precision: str,
+    global_batch_size: int,
+    *,
+    run_type: str,
+    language_pair: str = "eng-fra",
 ) -> str:
-    """Build a descriptive run name such as ``20261030-1432-l40s-bf16-bs256-full``."""
+    """Build a descriptive run name such as ``20261030-1432-eng-spa-a100-bf16-bs256-full``."""
     timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M")
     gpu_slug = device_name.lower().replace("nvidia", "").strip().replace(" ", "-").replace("_", "-")
     gpu_slug = "-".join(part for part in gpu_slug.split("-") if part)[:24] or "cpu"
-    return f"{timestamp}-{gpu_slug}-{precision}-bs{global_batch_size}-{run_type}"
+    return f"{timestamp}-{language_pair}-{gpu_slug}-{precision}-bs{global_batch_size}-{run_type}"
 
 
 class Trainer:
@@ -644,7 +654,13 @@ def run_training(
         precision = resolve_precision(settings.training.precision, context.device)
         global_batch = settings.training.batch_size * context.world_size
         run_name = settings.tracking.run_name or generate_run_name(
-            hardware.device_name, precision.name, global_batch, run_type=run_type
+            hardware.device_name,
+            precision.name,
+            global_batch,
+            run_type=run_type,
+            language_pair=language_pair_slug(
+                settings.data.source_language, settings.data.target_language
+            ),
         )
         tracker = ExperimentTracker(settings.tracking, enabled=context.is_main_process)
         tags = {

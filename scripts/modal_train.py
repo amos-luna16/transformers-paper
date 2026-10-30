@@ -27,7 +27,7 @@ REMOTE_ARTIFACTS_DIR = REMOTE_ROOT / "artifacts"
 VOLUME_ARTIFACTS_DIR = settings.modal.volume_mount_path / "artifacts"
 LOCAL_SYNC_DIR = settings.tracking.artifacts_dir / "modal"
 SUMMARY_FILE_NAME = "summary.json"
-DATA_FILE_NAME = Path(settings.data.archive_member).name
+DEFAULT_DATA_FILE_NAME = Path(settings.data.archive_member).name
 LOCK_KEY = "mlflow.db"
 LOCK_STALE_SECONDS = float(settings.modal.timeout_seconds + 600)
 
@@ -90,20 +90,22 @@ def release_volume_lock(owner: str) -> None:
         locks.pop(LOCK_KEY, None)
 
 
-def restore_state_from_volume(volume_artifacts_dir: Path) -> list[str]:
+def restore_state_from_volume(volume_artifacts_dir: Path, data_file_name: str) -> list[str]:
     """Seed the container-local artifacts dir with the MLflow database and cached corpus.
 
     The SQLite store is copied to local disk because Modal Volumes are optimised for
     write-once files, not for the many small writes of a database.
     """
     restored = []
-    for relative in (Path("mlflow.db"), Path("data") / DATA_FILE_NAME):
+    for relative in (Path("mlflow.db"), Path("data") / data_file_name):
         if _copy_if_exists(volume_artifacts_dir / relative, REMOTE_ARTIFACTS_DIR / relative):
             restored.append(str(relative))
     return restored
 
 
-def persist_state_to_volume(volume_artifacts_dir: Path, run_name: str | None) -> list[str]:
+def persist_state_to_volume(
+    volume_artifacts_dir: Path, run_name: str | None, data_file_name: str
+) -> list[str]:
     """Copy the MLflow store, run artifacts, checkpoints and plots to the Volume.
 
     Without ``run_name`` (a failed run, before ``summary.json`` exists) the whole checkpoints
@@ -120,7 +122,7 @@ def persist_state_to_volume(volume_artifacts_dir: Path, run_name: str | None) ->
         Path("mlflow.db"),
         Path("mlartifacts"),
         *run_paths,
-        Path("data") / DATA_FILE_NAME,
+        Path("data") / data_file_name,
         Path(SUMMARY_FILE_NAME),
     ):
         if _copy_if_exists(REMOTE_ARTIFACTS_DIR / relative, volume_artifacts_dir / relative):
@@ -166,6 +168,7 @@ def train_on_gpu(
         The training summary plus the list of paths persisted to the Volume.
     """
     volume_dir = Path(volume_artifacts_dir)
+    data_file_name = Path(environment.get("DATA_ARCHIVE_MEMBER", DEFAULT_DATA_FILE_NAME)).name
     owner = os.environ.get("MODAL_TASK_ID", f"pid-{os.getpid()}")
     gpus = describe_gpus()
     print(f"[modal] GPUs: {gpus}", flush=True)
@@ -174,7 +177,8 @@ def train_on_gpu(
     summary: dict[str, Any] | None = None
     try:
         volume.reload()
-        print(f"[modal] restored from volume: {restore_state_from_volume(volume_dir)}", flush=True)
+        restored = restore_state_from_volume(volume_dir, data_file_name)
+        print(f"[modal] restored from volume: {restored}", flush=True)
         summary_path = REMOTE_ARTIFACTS_DIR / SUMMARY_FILE_NAME
         command = [
             sys.executable,
@@ -201,7 +205,7 @@ def train_on_gpu(
             summary = json.loads(summary_path.read_text(encoding="utf-8"))
         finally:
             persisted = persist_state_to_volume(
-                volume_dir, summary["run_name"] if summary else None
+                volume_dir, summary["run_name"] if summary else None, data_file_name
             )
             print(f"[modal] persisted to volume: {persisted}", flush=True)
     finally:

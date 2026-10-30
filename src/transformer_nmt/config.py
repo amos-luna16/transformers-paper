@@ -62,6 +62,10 @@ class DataSettings(BaseSettings):
     )
     source_language: str = "English"
     target_language: str = "French"
+    swap_pair_order: bool = Field(
+        default=False,
+        description="Treat the second column of the corpus as the source (reverse direction).",
+    )
     max_pairs: int = Field(default=150_000, ge=1, description="Pairs read from the file.")
     max_seq_len: int = Field(
         default=40, ge=4, description="Maximum tokens per sentence, including <sos>/<eos>."
@@ -113,7 +117,7 @@ class TrainingSettings(BaseSettings):
 
     model_config = _section_config("TRAINING_")
 
-    epochs: int = Field(default=25, ge=1)
+    epochs: int = Field(default=50, ge=1)
     batch_size: int = Field(default=128, ge=1, description="Per-device batch size.")
     precision: PrecisionMode = Field(
         default="auto",

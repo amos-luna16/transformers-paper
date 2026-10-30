@@ -63,6 +63,8 @@ def prepare_data(settings: Settings, data_dir: Path | None = None) -> DataBundle
     tokenizer = WordTokenizer()
 
     raw_pairs = load_sentence_pairs(pairs_file, data_settings.max_pairs)
+    if data_settings.swap_pair_order:
+        raw_pairs = [(target, source) for source, target in raw_pairs]
     filtered_pairs = normalize_and_filter_pairs(raw_pairs, tokenizer, data_settings.max_seq_len)
     pairs = deduplicate_pairs(filtered_pairs)
     train_pairs, validation_pairs = split_pairs(

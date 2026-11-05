@@ -27,12 +27,18 @@ from transformer_nmt.utils.logging import configure_logging
 logger = logging.getLogger(__name__)
 
 
-def get_registry(request: Request) -> ModelRegistry:
+def get_registry(
+    request: Request,
+) -> ModelRegistry:
     """FastAPI dependency returning the registry created at startup."""
     return request.app.state.registry
 
 
-def _translator_or_error(registry: ModelRegistry, source: str, target: str) -> Translator:
+def _translator_or_error(
+    registry: ModelRegistry,
+    source: str,
+    target: str,
+) -> Translator:
     """Resolve the translator for a direction, mapping registry errors to HTTP errors."""
     try:
         return registry.translator_for(source, target)
@@ -42,7 +48,11 @@ def _translator_or_error(registry: ModelRegistry, source: str, target: str) -> T
         raise HTTPException(status_code=409, detail=str(error)) from error
 
 
-def create_app(settings: Settings | None = None, *, models_root: Path | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    *,
+    models_root: Path | None = None,
+) -> FastAPI:
     """Build the inference API.
 
     Args:
@@ -56,7 +66,9 @@ def create_app(settings: Settings | None = None, *, models_root: Path | None = N
     root = models_root or resolved.inference.models_root or resolved.tracking.artifacts_dir
 
     @asynccontextmanager
-    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    async def lifespan(
+        app: FastAPI,
+    ) -> AsyncIterator[None]:
         configure_logging()
         registry = ModelRegistry(
             root,
@@ -79,7 +91,9 @@ def create_app(settings: Settings | None = None, *, models_root: Path | None = N
     )
 
     @app.get("/health", response_model=HealthResponse)
-    def health(registry: ModelRegistry = Depends(get_registry)) -> HealthResponse:  # noqa: B008
+    def health(
+        registry: ModelRegistry = Depends(get_registry),  # noqa: B008
+    ) -> HealthResponse:  # noqa: B008
         """Report device, GPU, how many runs exist and which model serves each language pair."""
         active = registry.active_models()
         return HealthResponse(
@@ -92,12 +106,16 @@ def create_app(settings: Settings | None = None, *, models_root: Path | None = N
         )
 
     @app.get("/languages", response_model=LanguagesResponse)
-    def languages(registry: ModelRegistry = Depends(get_registry)) -> LanguagesResponse:  # noqa: B008
+    def languages(
+        registry: ModelRegistry = Depends(get_registry),  # noqa: B008
+    ) -> LanguagesResponse:  # noqa: B008
         """List the translation directions that have at least one trained model."""
         return LanguagesResponse(pairs=registry.language_pairs())
 
     @app.get("/models", response_model=ModelsResponse)
-    def list_models(registry: ModelRegistry = Depends(get_registry)) -> ModelsResponse:  # noqa: B008
+    def list_models(
+        registry: ModelRegistry = Depends(get_registry),  # noqa: B008
+    ) -> ModelsResponse:  # noqa: B008
         """List every run with its language direction, best first within each direction."""
         return ModelsResponse(models=registry.list_models())
 

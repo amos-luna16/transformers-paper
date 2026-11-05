@@ -12,7 +12,9 @@ _WHITESPACE_PATTERN = re.compile(r"\s+")
 _TOKEN_PATTERN = re.compile(r"\b\w+(?:'\w+)*\b|[.!?]")
 
 
-def normalize_text(text: str) -> str:
+def normalize_text(
+    text: str,
+) -> str:
     """Lower-case and clean a Latin-script sentence for word-level tokenisation.
 
     The function keeps accented letters, the ``œ`` ligature and apostrophes (contractions such
@@ -35,7 +37,10 @@ def normalize_text(text: str) -> str:
 class WordTokenizer:
     """Regex word-level tokenizer that keeps contractions and sentence punctuation."""
 
-    def __call__(self, text: str) -> list[str]:
+    def __call__(
+        self,
+        text: str,
+    ) -> list[str]:
         """Split a sentence into lower-cased word and punctuation tokens.
 
         Args:
@@ -46,7 +51,10 @@ class WordTokenizer:
         """
         return _TOKEN_PATTERN.findall(text.lower())
 
-    def detokenize(self, tokens: Sequence[str]) -> str:
+    def detokenize(
+        self,
+        tokens: Sequence[str],
+    ) -> str:
         """Join tokens back into a readable sentence.
 
         Args:

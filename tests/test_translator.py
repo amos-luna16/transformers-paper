@@ -12,35 +12,58 @@ TOKEN_A, TOKEN_B = 4, 5
 class _ScriptedDecoder(nn.Module):
     """Stub model whose next-token log-probabilities follow a fixed script per step."""
 
-    def __init__(self, vocab_size: int, script) -> None:
+    def __init__(
+        self,
+        vocab_size: int,
+        script,
+    ) -> None:
         super().__init__()
         self.config = ModelSettings(
             _env_file=None, d_model=8, num_heads=2, max_position_embeddings=16
         )
-        self.pad_index = 0
+        self.pad_idx = 0
         self.vocab_size = vocab_size
         self.script = script
 
-    def encode(self, source):
+    def encode(
+        self,
+        source,
+    ):
         return torch.zeros(1, source.size(1), 8), torch.ones(
             1, 1, 1, source.size(1), dtype=torch.bool
         )
 
-    def decode(self, target, memory, memory_mask):
+    def decode(
+        self,
+        target,
+        memory,
+        memory_mask,
+    ):
         step = target.size(1) - 1
         logits = torch.full((target.size(0), target.size(1), self.vocab_size), -30.0)
         for token, log_prob in self.script(step).items():
             logits[:, -1, token] = log_prob
         return logits
 
-    def greedy_decode(self, source, *, sos_index, eos_index, max_len):
+    def greedy_decode(
+        self,
+        source,
+        *,
+        sos_idx,
+        eos_idx,
+        max_len,
+    ):
         tokens = [
             max(self.script(step).items(), key=lambda kv: kv[1])[0] for step in range(max_len)
         ]
         return torch.tensor([tokens])
 
 
-def _translator(script, *, max_decode_len):
+def _translator(
+    script,
+    *,
+    max_decode_len,
+):
     source_vocab = Vocabulary([*SPECIAL_TOKENS, "x"])
     target_vocab = Vocabulary([*SPECIAL_TOKENS, "a", "b"])
     model = _ScriptedDecoder(len(target_vocab), script)

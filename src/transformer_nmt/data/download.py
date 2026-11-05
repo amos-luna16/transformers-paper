@@ -16,7 +16,10 @@ logger = logging.getLogger(__name__)
 _USER_AGENT = "transformer-nmt/0.1 (+https://github.com/Amos-Luna/transformers-paper)"
 
 
-def _write_atomically(destination: Path, write: Callable[[IO[bytes]], None]) -> Path:
+def _write_atomically(
+    destination: Path,
+    write: Callable[[IO[bytes]], None],
+) -> Path:
     """Stream into a temporary file next to ``destination`` and rename it into place on success.
 
     Args:
@@ -39,7 +42,12 @@ def _write_atomically(destination: Path, write: Callable[[IO[bytes]], None]) -> 
     return destination
 
 
-def download_file(url: str, destination: Path, *, timeout_seconds: int = 120) -> Path:
+def download_file(
+    url: str,
+    destination: Path,
+    *,
+    timeout_seconds: int = 120,
+) -> Path:
     """Download ``url`` to ``destination`` atomically.
 
     Args:
@@ -52,7 +60,9 @@ def download_file(url: str, destination: Path, *, timeout_seconds: int = 120) ->
     """
     request = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
 
-    def fetch(handle: IO[bytes]) -> None:
+    def fetch(
+        handle: IO[bytes],
+    ) -> None:
         with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
             shutil.copyfileobj(response, handle)
 
@@ -61,7 +71,11 @@ def download_file(url: str, destination: Path, *, timeout_seconds: int = 120) ->
     return destination
 
 
-def extract_archive_member(archive_path: Path, member: str, destination: Path) -> Path:
+def extract_archive_member(
+    archive_path: Path,
+    member: str,
+    destination: Path,
+) -> Path:
     """Extract a single member of a zip archive to ``destination`` atomically.
 
     Args:
@@ -73,14 +87,19 @@ def extract_archive_member(archive_path: Path, member: str, destination: Path) -
         The destination path.
     """
 
-    def extract(handle: IO[bytes]) -> None:
+    def extract(
+        handle: IO[bytes],
+    ) -> None:
         with zipfile.ZipFile(archive_path) as archive, archive.open(member) as source:
             shutil.copyfileobj(source, handle)
 
     return _write_atomically(destination, extract)
 
 
-def ensure_dataset_file(settings: DataSettings, data_dir: Path) -> Path:
+def ensure_dataset_file(
+    settings: DataSettings,
+    data_dir: Path,
+) -> Path:
     """Return the path of the sentence-pairs TSV, downloading and extracting it if needed.
 
     Args:

@@ -13,20 +13,26 @@ from transformer_nmt.data.dataset import (
 from transformer_nmt.data.vocabulary import Vocabulary
 
 
-def test_load_sentence_pairs_reads_first_two_columns(tmp_path):
+def test_load_sentence_pairs_reads_first_two_columns(
+    tmp_path,
+):
     path = tmp_path / "pairs.txt"
     path.write_text("Go.\tVa !\tCC-BY\nHi.\tSalut !\nbroken line\n", encoding="utf-8")
     assert load_sentence_pairs(path, max_pairs=10) == [("Go.", "Va !"), ("Hi.", "Salut !")]
     assert len(load_sentence_pairs(path, max_pairs=1)) == 1
 
 
-def test_normalize_and_filter_pairs_respects_length_budget(tokenizer):
+def test_normalize_and_filter_pairs_respects_length_budget(
+    tokenizer,
+):
     pairs = [("Go.", "Va !"), ("one two three four five", "un deux trois"), ("", "vide")]
     kept = normalize_and_filter_pairs(pairs, tokenizer, max_seq_len=4)
     assert kept == [("go .", "va !")]
 
 
-def test_normalize_and_filter_pairs_drops_zero_token_sides(tokenizer):
+def test_normalize_and_filter_pairs_drops_zero_token_sides(
+    tokenizer,
+):
     assert normalize_and_filter_pairs([("'", "oui ."), ("5 × 3", "quinze .")], tokenizer, 40) == []
 
 
@@ -50,7 +56,9 @@ def test_split_pairs_is_deterministic_and_disjoint():
     assert not set(train_a) & set(val_a)
 
 
-def test_dataset_wraps_target_with_specials_and_truncates(tokenizer):
+def test_dataset_wraps_target_with_specials_and_truncates(
+    tokenizer,
+):
     pairs = [("hello there", "bonjour à tous mes amis")]
     src_vocab = Vocabulary.build([p[0] for p in pairs], tokenizer)
     tgt_vocab = Vocabulary.build([p[1] for p in pairs], tokenizer)
@@ -60,7 +68,9 @@ def test_dataset_wraps_target_with_specials_and_truncates(tokenizer):
     assert target[0].item() == SOS_INDEX and target[-1].item() == EOS_INDEX and target.numel() == 4
 
 
-def test_collator_pads_to_multiple(tokenizer):
+def test_collator_pads_to_multiple(
+    tokenizer,
+):
     collator = PadCollator(PAD_INDEX, pad_to_multiple_of=8)
     source, target = collator(
         [(torch.tensor([5, 6]), torch.tensor([2, 7, 3])), (torch.tensor([9]), torch.tensor([2, 3]))]
@@ -69,7 +79,9 @@ def test_collator_pads_to_multiple(tokenizer):
     assert source[1].tolist() == [9] + [PAD_INDEX] * 7
 
 
-def test_build_dataloader_yields_padded_batches(tiny_bundle):
+def test_build_dataloader_yields_padded_batches(
+    tiny_bundle,
+):
     loader, sampler = build_dataloader(
         tiny_bundle.train_dataset,
         batch_size=4,

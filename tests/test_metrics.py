@@ -35,7 +35,9 @@ def test_accumulator_tensor_roundtrip():
     assert restored.mean_loss == 2.0 and math.isclose(restored.accuracy, 2 / 3)
 
 
-def test_history_series_best_and_export(tmp_path):
+def test_history_series_best_and_export(
+    tmp_path,
+):
     history = TrainingHistory()
     history.append({"epoch": 1, "val/loss": 2.0, "val/bleu": 5.0})
     history.append({"epoch": 2, "val/loss": 1.5})

@@ -36,7 +36,10 @@ class DataBundle:
     statistics: dict[str, Any] = field(default_factory=dict)
 
 
-def _length_statistics(pairs: list[SentencePair], tokenizer: WordTokenizer) -> dict[str, float]:
+def _length_statistics(
+    pairs: list[SentencePair],
+    tokenizer: WordTokenizer,
+) -> dict[str, float]:
     """Compute mean and maximum token lengths of both sides of ``pairs``."""
     source_lengths = [len(tokenizer(src)) for src, _ in pairs]
     target_lengths = [len(tokenizer(tgt)) for _, tgt in pairs]
@@ -48,7 +51,10 @@ def _length_statistics(pairs: list[SentencePair], tokenizer: WordTokenizer) -> d
     }
 
 
-def prepare_data(settings: Settings, data_dir: Path | None = None) -> DataBundle:
+def prepare_data(
+    settings: Settings,
+    data_dir: Path | None = None,
+) -> DataBundle:
     """Download, normalise, split and encode the translation corpus.
 
     Args:

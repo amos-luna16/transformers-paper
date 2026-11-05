@@ -4,60 +4,65 @@ import math
 
 from torch import Tensor, nn
 
-from transformer_nmt.model.layers import SinusoidalPositionalEncoding, TransformerEncoderLayer
-from transformer_nmt.model.masks import make_padding_mask
+from transformer_nmt.model.blocks import EncoderBlock
+from transformer_nmt.model.layers import PositionalEncoding
+from transformer_nmt.model.masks import create_padding_mask
 
 
-class TransformerEncoder(nn.Module):
-    """Embedding, positional encoding and a stack of encoder layers (paper section 3.1)."""
+class Encoder(nn.Module):
+    """Encoder: embeds the source sentence and runs it through a stack of encoder blocks."""
 
     def __init__(
         self,
         vocab_size: int,
-        d_model: int,
-        num_heads: int,
-        num_layers: int,
-        dim_feedforward: int,
-        dropout: float,
-        max_position_embeddings: int,
-        norm_first: bool,
-        pad_index: int,
+        d_model: int = 256,
+        nhead: int = 8,
+        num_layers: int = 3,
+        dim_feedforward: int = 512,
+        max_len: int = 256,
+        dropout: float = 0.1,
+        pad_idx: int = 0,
     ) -> None:
-        """Create the encoder.
+        """Create the embedding, positional encoding and the block stack.
 
         Args:
             vocab_size: Source vocabulary size.
-            d_model: Model dimension.
-            num_heads: Attention heads per layer.
-            num_layers: Number of stacked encoder layers.
-            dim_feedforward: Feed-forward hidden size.
+            d_model: Embedding dimension.
+            nhead: Attention heads per block.
+            num_layers: Number of stacked ``EncoderBlock``s.
+            dim_feedforward: Hidden size of each feed-forward network.
+            max_len: Length of the positional-encoding table.
             dropout: Dropout probability.
-            max_position_embeddings: Length of the positional-encoding table.
-            norm_first: Pre-LN (True) or Post-LN (False) residual blocks.
-            pad_index: Padding token index (its embedding stays zero and is masked).
+            pad_idx: Padding index (its embedding is zero and it is masked out).
         """
         super().__init__()
         self.d_model = d_model
-        self.pad_index = pad_index
-        self.token_embedding = nn.Embedding(vocab_size, d_model, padding_idx=pad_index)
-        self.positional_encoding = SinusoidalPositionalEncoding(
-            d_model, max_position_embeddings, dropout
+        self.pad_idx = pad_idx
+        self.token_emb = nn.Embedding(vocab_size, d_model, padding_idx=pad_idx)
+        self.pos_enc = PositionalEncoding(max_len=max_len, d_model=d_model)
+        self.dropout = nn.Dropout(dropout)
+        # The stack of layers is a list of blocks, one EncoderBlock per layer.
+        self.blocks = nn.ModuleList(
+            [EncoderBlock(d_model, nhead, dim_feedforward, dropout) for _ in range(num_layers)]
         )
-        self.layers = nn.ModuleList(
-            TransformerEncoderLayer(d_model, num_heads, dim_feedforward, dropout, norm_first)
-            for _ in range(num_layers)
-        )
-        self.final_norm = nn.LayerNorm(d_model) if norm_first else nn.Identity()
+        self.ln_final = nn.LayerNorm(d_model)  # closes the pre-LN stack
 
-    def forward(self, source_tokens: Tensor) -> tuple[Tensor, Tensor]:
-        """Encode ``source_tokens`` of shape ``[batch, source_len]``.
+    def forward(
+        self,
+        src: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        """Encode ``src`` of shape ``[batch_size, src_len]``.
+
+        Args:
+            src: Source token indices.
 
         Returns:
-            The memory tensor ``[batch, source_len, d_model]`` and the source padding mask
-            ``[batch, 1, 1, source_len]`` to be reused by decoder cross-attention.
+            ``memory`` of shape ``[batch_size, src_len, d_model]`` and the source padding mask
+            of shape ``[batch_size, 1, 1, src_len]`` for the decoder's cross-attention.
         """
-        source_mask = make_padding_mask(source_tokens, self.pad_index)
-        x = self.positional_encoding(self.token_embedding(source_tokens) * math.sqrt(self.d_model))
-        for layer in self.layers:
-            x = layer(x, source_mask)
-        return self.final_norm(x), source_mask
+        padding_mask = create_padding_mask(src, self.pad_idx)
+        x = self.token_emb(src) * math.sqrt(self.d_model)
+        x = self.dropout(x + self.pos_enc(x))
+        for block in self.blocks:
+            x = block(x, padding_mask)
+        return self.ln_final(x), padding_mask

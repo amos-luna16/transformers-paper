@@ -5,25 +5,43 @@ import torch
 
 from transformer_nmt.training.checkpoint import (
     BestCheckpointSummary,
-    find_best_checkpoint,
+    discover_checkpoints,
     load_checkpoint,
+    rank_checkpoints,
     save_checkpoint,
     unwrap_model,
 )
 
 
-def _write_run(root, name, *, value, metric="val/loss", run_type="full", with_checkpoint=True):
+def _write_run(
+    root,
+    name,
+    *,
+    value,
+    metric="val/loss",
+    run_type="full",
+    complete=True,
+):
     run_dir = root / name
     run_dir.mkdir(parents=True)
     BestCheckpointSummary(
         run_name=name, metric=metric, value=value, epoch=1, run_type=run_type
     ).save(run_dir / "best.json")
-    if with_checkpoint:
+    if complete:
         (run_dir / "best.pt").write_bytes(b"stub")
+        (run_dir / "settings.json").write_text(json.dumps({"data": {}}))
     return run_dir
 
 
-def test_save_and_load_checkpoint_roundtrip(tmp_path):
+def _names(
+    candidates,
+):
+    return [candidate.summary.run_name for candidate in candidates]
+
+
+def test_save_and_load_checkpoint_roundtrip(
+    tmp_path,
+):
     model = torch.nn.Linear(3, 2)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1.0)
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda step: 0.5)
@@ -45,59 +63,52 @@ def test_save_and_load_checkpoint_roundtrip(tmp_path):
     assert torch.equal(restored.weight, model.weight)
 
 
-def test_find_best_checkpoint_prefers_lowest_loss(tmp_path):
-    _write_run(tmp_path, "run-a", value=2.0)
-    _write_run(tmp_path, "run-b", value=1.5)
-    assert find_best_checkpoint(tmp_path) == tmp_path / "run-b" / "best.pt"
-
-
-def test_find_best_checkpoint_prefers_highest_bleu(tmp_path):
-    for name, value in (("run-a", 20.0), ("run-b", 15.0)):
-        run_dir = tmp_path / name
-        run_dir.mkdir()
-        (run_dir / "best.json").write_text(
-            json.dumps({"run_name": name, "metric": "val/bleu", "value": value, "epoch": 1})
-        )
-        (run_dir / "best.pt").write_bytes(b"stub")
-    assert find_best_checkpoint(tmp_path) == tmp_path / "run-a" / "best.pt"
-
-
-def test_find_best_checkpoint_raises_when_empty(tmp_path):
-    with pytest.raises(FileNotFoundError):
-        find_best_checkpoint(tmp_path)
-
-
-def test_find_best_checkpoint_skips_smoke_runs_when_full_runs_exist(tmp_path):
-    _write_run(tmp_path, "quick", value=0.5, run_type="smoke")
-    _write_run(tmp_path, "named-smoke-run", value=0.6)
-    _write_run(tmp_path, "full-run", value=1.5)
-    assert find_best_checkpoint(tmp_path) == tmp_path / "full-run" / "best.pt"
-    # Without the name heuristic only the recorded run_type is used.
-    assert find_best_checkpoint(tmp_path, exclude=()) == tmp_path / "named-smoke-run" / "best.pt"
-
-
-def test_find_best_checkpoint_falls_back_to_smoke_runs(tmp_path):
-    _write_run(tmp_path, "quick", value=0.5, run_type="smoke")
-    assert find_best_checkpoint(tmp_path) == tmp_path / "quick" / "best.pt"
-
-
-def test_find_best_checkpoint_ignores_sidecars_without_weights(tmp_path):
-    _write_run(tmp_path / "checkpoints", "new", value=2.0)
+def test_discover_requires_weights_and_settings_next_to_the_card(
+    tmp_path,
+):
+    _write_run(tmp_path / "checkpoints", "complete", value=2.0)
     _write_run(
-        tmp_path / "mlartifacts" / "exp" / "id" / "artifacts" / "run",
-        "new",
+        tmp_path / "mlartifacts" / "exp" / "run" / "artifacts" / "checkpoints",
+        "copy",
         value=1.5,
-        with_checkpoint=False,
+        complete=False,
     )
-    assert find_best_checkpoint(tmp_path) == tmp_path / "checkpoints" / "new" / "best.pt"
+    assert _names(discover_checkpoints(tmp_path)) == ["complete"]
+    assert discover_checkpoints(tmp_path / "nothing") == []
 
 
-def test_find_best_checkpoint_requires_a_single_metric_or_an_explicit_one(tmp_path):
-    _write_run(tmp_path, "loss-run", value=1.0, metric="val/loss")
+def test_rank_prefers_lowest_loss_or_highest_bleu(
+    tmp_path,
+):
+    _write_run(tmp_path, "loss-a", value=2.0)
+    _write_run(tmp_path, "loss-b", value=1.5)
+    assert _names(rank_checkpoints(discover_checkpoints(tmp_path))) == ["loss-b", "loss-a"]
+    bleu_root = tmp_path / "bleu"
+    _write_run(bleu_root, "bleu-a", value=20.0, metric="val/bleu")
+    _write_run(bleu_root, "bleu-b", value=15.0, metric="val/bleu")
+    assert _names(rank_checkpoints(discover_checkpoints(bleu_root))) == ["bleu-a", "bleu-b"]
+
+
+def test_rank_sets_smoke_runs_aside_unless_nothing_else_exists(
+    tmp_path,
+):
+    _write_run(tmp_path, "quick", value=0.5, run_type="smoke")
+    _write_run(tmp_path, "full-run", value=1.5)
+    assert _names(rank_checkpoints(discover_checkpoints(tmp_path))) == ["full-run"]
+    only_smoke = tmp_path / "only"
+    _write_run(only_smoke, "quick", value=0.5, run_type="smoke")
+    assert _names(rank_checkpoints(discover_checkpoints(only_smoke))) == ["quick"]
+
+
+def test_rank_rejects_mixed_metrics_unless_one_is_chosen(
+    tmp_path,
+):
+    _write_run(tmp_path, "loss-run", value=1.0)
     _write_run(tmp_path, "bleu-run", value=30.0, metric="val/bleu")
+    candidates = discover_checkpoints(tmp_path)
     with pytest.raises(ValueError):
-        find_best_checkpoint(tmp_path)
-    assert find_best_checkpoint(tmp_path, metric="val/bleu") == tmp_path / "bleu-run" / "best.pt"
+        rank_checkpoints(candidates)
+    assert _names(rank_checkpoints(candidates, metric="val/bleu")) == ["bleu-run"]
 
 
 def test_unwrap_model_returns_plain_module():

@@ -33,7 +33,9 @@ LANGUAGE_CODES: dict[str, str] = {
 LanguagePair = tuple[str, str]
 
 
-def language_code(language_name: str) -> str:
+def language_code(
+    language_name: str,
+) -> str:
     """Map a language name from the training settings to a two-letter code."""
     return LANGUAGE_CODES.get(language_name, language_name[:2].lower())
 
@@ -92,11 +94,11 @@ class ModelRegistry:
         return torch.cuda.get_device_name(self.device)
 
     @staticmethod
-    def _languages_of(candidate: CheckpointCandidate) -> LanguagePair | None:
+    def _languages_of(
+        candidate: CheckpointCandidate,
+    ) -> LanguagePair | None:
         """Read the language direction recorded in the run's ``settings.json``."""
         settings_path = candidate.run_dir / SETTINGS_NAME
-        if not settings_path.exists():
-            return None
         data = json.loads(settings_path.read_text(encoding="utf-8")).get("data", {})
         return (
             language_code(data.get("source_language", "English")),
@@ -122,7 +124,10 @@ class ModelRegistry:
             registered.extend(RegisteredModel(c, *pair) for c in [*ranked, *leftovers])
         return registered
 
-    def _info(self, model: RegisteredModel) -> ModelInfo:
+    def _info(
+        self,
+        model: RegisteredModel,
+    ) -> ModelInfo:
         """Describe a registered model for the API."""
         summary = model.candidate.summary
         return ModelInfo(
@@ -155,7 +160,11 @@ class ModelRegistry:
             for (source, target), count in sorted(counts.items())
         ]
 
-    def active_run_name(self, source_language: str, target_language: str) -> str | None:
+    def active_run_name(
+        self,
+        source_language: str,
+        target_language: str,
+    ) -> str | None:
         """Name of the run currently serving a direction, if any."""
         return self._active_run_names.get((source_language, target_language))
 
@@ -163,7 +172,10 @@ class ModelRegistry:
         """Describe the model currently serving each language pair."""
         return [info for info in self.list_models() if info.active]
 
-    def select(self, run_name: str) -> ModelInfo:
+    def select(
+        self,
+        run_name: str,
+    ) -> ModelInfo:
         """Load ``run_name`` and make it the active model for its language pair.
 
         Raises:
@@ -189,7 +201,11 @@ class ModelRegistry:
             best_per_pair.setdefault(model.pair, model.run_name)
         return [self.select(run_name) for run_name in best_per_pair.values()]
 
-    def translator_for(self, source_language: str, target_language: str) -> Translator:
+    def translator_for(
+        self,
+        source_language: str,
+        target_language: str,
+    ) -> Translator:
         """Return the translator serving a direction, loading the best run on demand.
 
         Raises:

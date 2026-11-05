@@ -4,7 +4,10 @@ from transformer_nmt.config import TrackingSettings
 from transformer_nmt.training.tracking import ExperimentTracker, relocate_mlflow_store
 
 
-def _settings(tmp_path, **overrides) -> TrackingSettings:
+def _settings(
+    tmp_path,
+    **overrides,
+) -> TrackingSettings:
     return TrackingSettings(
         _env_file=None,
         artifacts_dir=tmp_path / "artifacts",
@@ -14,7 +17,9 @@ def _settings(tmp_path, **overrides) -> TrackingSettings:
     )
 
 
-def test_tracker_logs_params_metrics_and_artifacts(tmp_path):
+def test_tracker_logs_params_metrics_and_artifacts(
+    tmp_path,
+):
     settings = _settings(tmp_path)
     tracker = ExperimentTracker(settings)
     with tracker.run("run-1", tags={"run_type": "test"}):
@@ -32,7 +37,9 @@ def test_tracker_logs_params_metrics_and_artifacts(tmp_path):
     assert any(f.path == "payload.json" for f in client.list_artifacts(run_id))
 
 
-def test_disabled_tracker_is_noop(tmp_path):
+def test_disabled_tracker_is_noop(
+    tmp_path,
+):
     settings = _settings(tmp_path)
     tracker = ExperimentTracker(settings, enabled=False)
     with tracker.run("ignored"):
@@ -40,7 +47,9 @@ def test_disabled_tracker_is_noop(tmp_path):
     assert tracker.run_id is None and not settings.mlflow_db_path.exists()
 
 
-def test_relocate_store_rewrites_experiment_and_run_uris(tmp_path):
+def test_relocate_store_rewrites_experiment_and_run_uris(
+    tmp_path,
+):
     remote_settings = _settings(tmp_path)
     client = MlflowClient(tracking_uri=remote_settings.resolved_tracking_uri)
     experiment_id = client.create_experiment(

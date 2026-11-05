@@ -7,7 +7,11 @@ import numpy as np
 import torch
 
 
-def seed_everything(seed: int, *, deterministic: bool = False) -> None:
+def seed_everything(
+    seed: int,
+    *,
+    deterministic: bool = False,
+) -> None:
     """Seed Python, NumPy and PyTorch (CPU and every CUDA device).
 
     Args:

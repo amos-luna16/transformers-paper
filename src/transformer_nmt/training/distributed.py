@@ -33,7 +33,9 @@ class DistributedContext:
         return self.rank == 0
 
 
-def initialize_distributed(preferred_device: str | None = None) -> DistributedContext:
+def initialize_distributed(
+    preferred_device: str | None = None,
+) -> DistributedContext:
     """Initialise ``torch.distributed`` from the environment set by ``torchrun``.
 
     When ``WORLD_SIZE`` is absent or ``1`` the function returns a single-process context
@@ -67,20 +69,27 @@ def initialize_distributed(preferred_device: str | None = None) -> DistributedCo
     )
 
 
-def all_reduce_sum(values: Tensor, context: DistributedContext) -> Tensor:
+def all_reduce_sum(
+    values: Tensor,
+    context: DistributedContext,
+) -> Tensor:
     """Sum ``values`` across all ranks (identity when not distributed)."""
     if context.is_distributed:
         dist.all_reduce(values, op=dist.ReduceOp.SUM)
     return values
 
 
-def barrier(context: DistributedContext) -> None:
+def barrier(
+    context: DistributedContext,
+) -> None:
     """Synchronise all ranks (no-op when not distributed)."""
     if context.is_distributed:
         dist.barrier()
 
 
-def shutdown_distributed(context: DistributedContext) -> None:
+def shutdown_distributed(
+    context: DistributedContext,
+) -> None:
     """Destroy the process group if one was created."""
     if context.is_distributed and dist.is_initialized():
         dist.destroy_process_group()

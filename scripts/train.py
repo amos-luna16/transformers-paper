@@ -10,7 +10,9 @@ from transformer_nmt.config import Settings, get_settings
 from transformer_nmt.training.trainer import run_training
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+def parse_args(
+    argv: list[str] | None = None,
+) -> argparse.Namespace:
     """Parse command-line overrides for a training run.
 
     Every option defaults to the value resolved by the Pydantic settings (``.env`` and
@@ -44,7 +46,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def build_settings(args: argparse.Namespace) -> Settings:
+def build_settings(
+    args: argparse.Namespace,
+) -> Settings:
     """Combine environment-driven settings with command-line overrides."""
     settings = get_settings()
     if args.smoke:
@@ -69,7 +73,9 @@ def build_settings(args: argparse.Namespace) -> Settings:
     )
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+) -> int:
     """Script entry point; returns a process exit code."""
     args = parse_args(argv)
     settings = build_settings(args)

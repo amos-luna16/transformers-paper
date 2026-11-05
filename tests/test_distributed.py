@@ -22,7 +22,10 @@ def _free_port() -> int:
         return sock.getsockname()[1]
 
 
-def _worker(rank: int, port: int) -> None:
+def _worker(
+    rank: int,
+    port: int,
+) -> None:
     dist.init_process_group(
         "gloo", init_method=f"tcp://127.0.0.1:{port}", rank=rank, world_size=WORLD_SIZE
     )

@@ -11,12 +11,11 @@ from torch import Tensor
 from transformer_nmt.config import ModelSettings
 from transformer_nmt.data.preprocessing import WordTokenizer, normalize_text
 from transformer_nmt.data.vocabulary import Vocabulary
-from transformer_nmt.model.transformer import Seq2SeqTransformer
+from transformer_nmt.model.encoder_decoder import EncoderDecoder
 from transformer_nmt.training.checkpoint import (
     SETTINGS_NAME,
     SOURCE_VOCAB_NAME,
     TARGET_VOCAB_NAME,
-    find_best_checkpoint,
     load_checkpoint,
 )
 from transformer_nmt.utils.hardware import resolve_device
@@ -24,7 +23,10 @@ from transformer_nmt.utils.hardware import resolve_device
 logger = logging.getLogger(__name__)
 
 
-def _length_penalty(length: int, alpha: float) -> float:
+def _length_penalty(
+    length: int,
+    alpha: float,
+) -> float:
     """GNMT length normalisation ``((5 + length) / 6) ** alpha``."""
     return ((5.0 + length) / 6.0) ** alpha
 
@@ -34,7 +36,7 @@ class Translator:
 
     def __init__(
         self,
-        model: Seq2SeqTransformer,
+        model: EncoderDecoder,
         source_vocab: Vocabulary,
         target_vocab: Vocabulary,
         tokenizer: WordTokenizer,
@@ -66,7 +68,10 @@ class Translator:
 
     @classmethod
     def from_checkpoint(
-        cls, checkpoint_path: Path, device: torch.device | None = None, **kwargs: int
+        cls,
+        checkpoint_path: Path,
+        device: torch.device | None = None,
+        **kwargs: int,
     ) -> Translator:
         """Rebuild the model from a checkpoint and the metadata saved next to it.
 
@@ -85,7 +90,7 @@ class Translator:
         source_vocab = Vocabulary.load(run_dir / SOURCE_VOCAB_NAME)
         target_vocab = Vocabulary.load(run_dir / TARGET_VOCAB_NAME)
         resolved_device = device or resolve_device()
-        model = Seq2SeqTransformer(
+        model = EncoderDecoder(
             len(source_vocab), len(target_vocab), model_settings, source_vocab.pad_index
         )
         model.load_state_dict(
@@ -100,14 +105,10 @@ class Translator:
         kwargs.setdefault("max_source_len", int(settings_payload["data"]["max_seq_len"]))
         return cls(model, source_vocab, target_vocab, WordTokenizer(), resolved_device, **kwargs)
 
-    @classmethod
-    def from_best_run(
-        cls, search_root: Path, device: torch.device | None = None, **kwargs: int
-    ) -> Translator:
-        """Load the best checkpoint across every run found below ``search_root``."""
-        return cls.from_checkpoint(find_best_checkpoint(search_root), device, **kwargs)
-
-    def _encode_source(self, sentence: str) -> Tensor | None:
+    def _encode_source(
+        self,
+        sentence: str,
+    ) -> Tensor | None:
         """Normalise, tokenise and index a source sentence into a ``[1, length]`` tensor.
 
         Returns ``None`` when nothing survives normalisation (digits, emoji, other scripts).
@@ -124,11 +125,17 @@ class Translator:
             [self.source_vocab.encode(tokens)], dtype=torch.long, device=self.device
         )
 
-    def _indices_to_sentence(self, indices: Sequence[int]) -> str:
+    def _indices_to_sentence(
+        self,
+        indices: Sequence[int],
+    ) -> str:
         """Map target indices back to a detokenised sentence."""
         return self.tokenizer.detokenize(self.target_vocab.decode(indices))
 
-    def translate_batch(self, sentences: Sequence[str]) -> list[str]:
+    def translate_batch(
+        self,
+        sentences: Sequence[str],
+    ) -> list[str]:
         """Translate several sentences with batched greedy decoding.
 
         Args:
@@ -154,8 +161,8 @@ class Translator:
             batch[row, : seq.numel()] = seq
         generated = self.model.greedy_decode(
             batch,
-            sos_index=self.target_vocab.sos_index,
-            eos_index=self.target_vocab.eos_index,
+            sos_idx=self.target_vocab.sos_index,
+            eos_idx=self.target_vocab.eos_index,
             max_len=self.max_decode_len,
         )
         for (index, _), row in zip(kept, generated, strict=True):
@@ -163,7 +170,13 @@ class Translator:
         return translations
 
     @torch.no_grad()
-    def beam_search(self, source: Tensor, *, beam_size: int, length_penalty: float) -> list[int]:
+    def beam_search(
+        self,
+        source: Tensor,
+        *,
+        beam_size: int,
+        length_penalty: float,
+    ) -> list[int]:
         """Beam-search decode a single encoded sentence.
 
         Args:
@@ -225,7 +238,10 @@ class Translator:
         return best[1:]
 
     @torch.no_grad()
-    def stream_greedy(self, sentence: str) -> Iterator[str]:
+    def stream_greedy(
+        self,
+        sentence: str,
+    ) -> Iterator[str]:
         """Greedy-decode ``sentence`` and yield each target token as soon as it is produced.
 
         Args:
@@ -247,7 +263,13 @@ class Translator:
             generated.append(next_token)
             yield self.target_vocab.index_to_token(next_token)
 
-    def translate(self, sentence: str, *, beam_size: int = 4, length_penalty: float = 0.6) -> str:
+    def translate(
+        self,
+        sentence: str,
+        *,
+        beam_size: int = 4,
+        length_penalty: float = 0.6,
+    ) -> str:
         """Translate one sentence.
 
         Args:

@@ -25,7 +25,9 @@ SETTINGS_NAME = "settings.json"
 SMOKE_RUN_TYPE = "smoke"
 
 
-def unwrap_model(model: nn.Module) -> nn.Module:
+def unwrap_model(
+    model: nn.Module,
+) -> nn.Module:
     """Return the plain module behind DDP and ``torch.compile`` wrappers."""
     if isinstance(model, DistributedDataParallel):
         model = model.module
@@ -43,12 +45,18 @@ class BestCheckpointSummary:
     checkpoint_file: str = BEST_CHECKPOINT_NAME
     run_type: str = "full"
 
-    def save(self, path: Path) -> None:
+    def save(
+        self,
+        path: Path,
+    ) -> None:
         """Write the summary as JSON."""
         path.write_text(json.dumps(self.__dict__, indent=2), encoding="utf-8")
 
     @classmethod
-    def load(cls, path: Path) -> BestCheckpointSummary:
+    def load(
+        cls,
+        path: Path,
+    ) -> BestCheckpointSummary:
         """Read a summary written by :meth:`save`."""
         return cls(**json.loads(path.read_text(encoding="utf-8")))
 
@@ -59,7 +67,10 @@ class BestCheckpointSummary:
 
 
 def save_run_metadata(
-    run_dir: Path, settings: Settings, source_vocab: Vocabulary, target_vocab: Vocabulary
+    run_dir: Path,
+    settings: Settings,
+    source_vocab: Vocabulary,
+    target_vocab: Vocabulary,
 ) -> None:
     """Persist vocabularies and settings next to the checkpoints so inference is self-contained.
 
@@ -124,7 +135,10 @@ def save_checkpoint(
     return path
 
 
-def load_checkpoint(path: Path, map_location: str | torch.device = "cpu") -> dict[str, Any]:
+def load_checkpoint(
+    path: Path,
+    map_location: str | torch.device = "cpu",
+) -> dict[str, Any]:
     """Load a checkpoint written by :func:`save_checkpoint` with ``weights_only=True``."""
     return torch.load(path, map_location=map_location, weights_only=True)
 
@@ -142,10 +156,13 @@ class CheckpointCandidate:
         return self.run_dir / self.summary.checkpoint_file
 
 
-def discover_checkpoints(search_root: Path) -> list[CheckpointCandidate]:
-    """Collect every run below ``search_root`` whose ``best.json`` sits next to its checkpoint.
+def discover_checkpoints(
+    search_root: Path,
+) -> list[CheckpointCandidate]:
+    """Collect every run whose ``best.json`` sits next to its checkpoint and ``settings.json``.
 
-    Copies that MLflow logs under ``mlartifacts`` have no weights beside them and are skipped.
+    The copies MLflow keeps under ``mlartifacts`` have no ``settings.json`` beside them and are
+    therefore skipped.
 
     Args:
         search_root: Directory searched recursively (for example ``artifacts/``).
@@ -156,8 +173,9 @@ def discover_checkpoints(search_root: Path) -> list[CheckpointCandidate]:
     candidates: list[CheckpointCandidate] = []
     for sidecar in sorted(search_root.rglob(BEST_SUMMARY_NAME)):
         summary = BestCheckpointSummary.load(sidecar)
-        if (sidecar.parent / summary.checkpoint_file).exists():
-            candidates.append(CheckpointCandidate(summary, sidecar.parent))
+        run_dir = sidecar.parent
+        if (run_dir / summary.checkpoint_file).exists() and (run_dir / SETTINGS_NAME).exists():
+            candidates.append(CheckpointCandidate(summary, run_dir))
     return candidates
 
 
@@ -206,46 +224,10 @@ def rank_checkpoints(
             f"Runs were selected with different metrics {sorted(by_metric)}; pass metric=..."
         )
 
-    def sort_key(candidate: CheckpointCandidate) -> float:
+    def sort_key(
+        candidate: CheckpointCandidate,
+    ) -> float:
         summary = candidate.summary
         return summary.value if summary.minimize else -summary.value
 
     return sorted(pool, key=sort_key)
-
-
-def find_best_checkpoint(
-    search_root: Path,
-    *,
-    exclude: Sequence[str] = (SMOKE_RUN_TYPE,),
-    metric: str | None = None,
-) -> Path:
-    """Locate the best checkpoint across all runs below ``search_root``.
-
-    See :func:`discover_checkpoints` and :func:`rank_checkpoints` for the rules applied.
-
-    Args:
-        search_root: Directory searched recursively (for example ``artifacts/``).
-        exclude: Substrings identifying smoke runs by name (fallback for old sidecars).
-        metric: Selection metric to compare, for example ``"val/loss"``.
-
-    Returns:
-        Path to the winning ``best.pt``.
-
-    Raises:
-        FileNotFoundError: If no usable sidecar exists below ``search_root``.
-        ValueError: If runs with different selection metrics exist and ``metric`` is not given.
-    """
-    ranked = rank_checkpoints(discover_checkpoints(search_root), exclude=exclude, metric=metric)
-    if not ranked:
-        raise FileNotFoundError(
-            f"No '{BEST_SUMMARY_NAME}' with an existing checkpoint found under {search_root}"
-        )
-    best = ranked[0]
-    logger.info(
-        "Best checkpoint: run=%s %s=%.4f (%s)",
-        best.summary.run_name,
-        best.summary.metric,
-        best.summary.value,
-        best.run_dir,
-    )
-    return best.checkpoint_path

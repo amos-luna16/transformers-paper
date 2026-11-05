@@ -26,7 +26,10 @@ class PrecisionPolicy:
         return self.autocast_dtype is not None
 
 
-def resolve_precision(requested: PrecisionMode, device: torch.device) -> PrecisionPolicy:
+def resolve_precision(
+    requested: PrecisionMode,
+    device: torch.device,
+) -> PrecisionPolicy:
     """Map the requested precision to what the device supports.
 
     ``auto`` selects bf16 on GPUs with native bfloat16 (Ampere, Ada, Hopper), fp16 with loss
@@ -67,7 +70,10 @@ def enable_tensor_core_math() -> None:
 
 
 @contextlib.contextmanager
-def autocast_context(policy: PrecisionPolicy, device: torch.device) -> Iterator[None]:
+def autocast_context(
+    policy: PrecisionPolicy,
+    device: torch.device,
+) -> Iterator[None]:
     """Context manager enabling autocast according to ``policy`` (no-op for fp32)."""
     if not policy.enabled:
         yield
@@ -77,7 +83,8 @@ def autocast_context(policy: PrecisionPolicy, device: torch.device) -> Iterator[
 
 
 def create_grad_scaler(
-    policy: PrecisionPolicy, device: torch.device
+    policy: PrecisionPolicy,
+    device: torch.device,
 ) -> torch.amp.GradScaler | None:
     """Create a ``GradScaler`` only when the policy requires loss scaling (fp16)."""
     if not policy.use_grad_scaler:

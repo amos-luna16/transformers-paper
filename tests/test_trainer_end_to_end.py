@@ -6,7 +6,7 @@ from transformer_nmt.inference.translator import Translator
 from transformer_nmt.training.checkpoint import (
     BEST_CHECKPOINT_NAME,
     BEST_SUMMARY_NAME,
-    find_best_checkpoint,
+    discover_checkpoints,
 )
 from transformer_nmt.training.distributed import DistributedContext
 from transformer_nmt.training.tracking import ExperimentTracker
@@ -21,7 +21,10 @@ def test_generate_run_name_slug():
     )
 
 
-def test_trainer_runs_end_to_end_and_translator_loads(tiny_settings, tiny_bundle):
+def test_trainer_runs_end_to_end_and_translator_loads(
+    tiny_settings,
+    tiny_bundle,
+):
     settings = tiny_settings.with_overrides(training={"epochs": 2})
     context = DistributedContext(rank=0, local_rank=0, world_size=1, device=torch.device("cpu"))
     tracker = ExperimentTracker(settings.tracking)
@@ -36,10 +39,11 @@ def test_trainer_runs_end_to_end_and_translator_loads(tiny_settings, tiny_bundle
     assert (run_dir / BEST_CHECKPOINT_NAME).exists() and (run_dir / "last.pt").exists()
     assert json.loads((run_dir / BEST_SUMMARY_NAME).read_text())["metric"] == "val/loss"
     assert (settings.tracking.plots_dir / "unit-run" / "training_curves.png").exists()
-    assert find_best_checkpoint(settings.tracking.artifacts_dir) == run_dir / BEST_CHECKPOINT_NAME
+    found = discover_checkpoints(settings.tracking.artifacts_dir)
+    assert [c.checkpoint_path for c in found] == [run_dir / BEST_CHECKPOINT_NAME]
 
-    translator = Translator.from_best_run(
-        settings.tracking.artifacts_dir, torch.device("cpu"), max_decode_len=8
+    translator = Translator.from_checkpoint(
+        run_dir / BEST_CHECKPOINT_NAME, torch.device("cpu"), max_decode_len=8
     )
     greedy = translator.translate("i am happy .", beam_size=1)
     beam = translator.translate("i am happy .", beam_size=3)

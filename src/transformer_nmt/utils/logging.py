@@ -9,19 +9,28 @@ _LOG_FORMAT = "%(asctime)s | %(levelname)-7s | rank%(rank)s | %(name)s | %(messa
 class _RankFilter(logging.Filter):
     """Inject the process rank into every log record."""
 
-    def __init__(self, rank: int) -> None:
+    def __init__(
+        self,
+        rank: int,
+    ) -> None:
         """Store the rank to inject."""
         super().__init__()
         self.rank = rank
 
-    def filter(self, record: logging.LogRecord) -> bool:
+    def filter(
+        self,
+        record: logging.LogRecord,
+    ) -> bool:
         """Attach ``rank`` to the record and keep it."""
         record.rank = self.rank
         return True
 
 
 def configure_logging(
-    rank: int = 0, *, level: int = logging.INFO, quiet_non_main: bool = True
+    rank: int = 0,
+    *,
+    level: int = logging.INFO,
+    quiet_non_main: bool = True,
 ) -> None:
     """Configure root logging once per process with a rank-aware format.
 

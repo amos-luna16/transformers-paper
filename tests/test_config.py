@@ -15,7 +15,9 @@ def test_defaults_match_reference_architecture():
     assert settings.tracking.resolved_tracking_uri.startswith("sqlite:///")
 
 
-def test_environment_overrides(monkeypatch):
+def test_environment_overrides(
+    monkeypatch,
+):
     monkeypatch.setenv("TRAINING_EPOCHS", "3")
     monkeypatch.setenv("MODAL_GPU", "A100-40GB")
     monkeypatch.setenv("MODAL_GPU_COUNT", "2")
@@ -36,7 +38,9 @@ def test_gpu_spec_rejects_embedded_count():
         ModalSettings(_env_file=None, gpu="H100:2")
 
 
-def test_with_overrides_and_flat_dict_hide_secrets(monkeypatch):
+def test_with_overrides_and_flat_dict_hide_secrets(
+    monkeypatch,
+):
     monkeypatch.setenv("MODAL_TOKEN_ID", "ak-secret")
     settings = Settings().with_overrides(training={"epochs": 7}, data={"max_pairs": 10})
     assert settings.training.epochs == 7 and settings.data.max_pairs == 10
@@ -58,7 +62,9 @@ def test_training_settings_are_frozen():
         training.epochs = 10  # type: ignore[misc]
 
 
-def test_to_environment_round_trips_through_settings(monkeypatch):
+def test_to_environment_round_trips_through_settings(
+    monkeypatch,
+):
     original = Settings().with_overrides(
         training={"epochs": 9, "precision": "bf16", "compile_model": True},
         model={"d_model": 64, "num_heads": 4},
@@ -75,7 +81,9 @@ def test_to_environment_round_trips_through_settings(monkeypatch):
     assert restored.data == original.data
 
 
-def test_credential_environment_only_contains_present_values(monkeypatch):
+def test_credential_environment_only_contains_present_values(
+    monkeypatch,
+):
     monkeypatch.setenv("MODAL_TOKEN_ID", "ak-1")
     monkeypatch.setenv("MODAL_TOKEN_SECRET", "as-1")
     assert ModalSettings().credential_environment() == {

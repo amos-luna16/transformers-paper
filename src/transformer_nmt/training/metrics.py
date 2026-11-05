@@ -15,7 +15,11 @@ from torch import Tensor
 MAX_LOSS_FOR_PERPLEXITY = 20.0
 
 
-def count_correct_tokens(logits: Tensor, targets: Tensor, pad_index: int) -> tuple[int, int]:
+def count_correct_tokens(
+    logits: Tensor,
+    targets: Tensor,
+    pad_index: int,
+) -> tuple[int, int]:
     """Count greedy next-token hits over non-padding positions.
 
     Args:
@@ -32,12 +36,17 @@ def count_correct_tokens(logits: Tensor, targets: Tensor, pad_index: int) -> tup
     return correct, int(mask.sum().item())
 
 
-def perplexity_from_loss(mean_token_loss: float) -> float:
+def perplexity_from_loss(
+    mean_token_loss: float,
+) -> float:
     """Convert a mean per-token cross-entropy into perplexity, clamped to avoid overflow."""
     return math.exp(min(mean_token_loss, MAX_LOSS_FOR_PERPLEXITY))
 
 
-def corpus_bleu(hypotheses: Sequence[str], references: Sequence[str]) -> float:
+def corpus_bleu(
+    hypotheses: Sequence[str],
+    references: Sequence[str],
+) -> float:
     """Compute corpus-level BLEU with sacreBLEU on already tokenised, lower-cased text.
 
     Args:
@@ -64,13 +73,21 @@ class TokenLossAccumulator:
     token_count: int = 0
     correct_tokens: int = 0
 
-    def update(self, loss_sum: float, token_count: int, correct_tokens: int) -> None:
+    def update(
+        self,
+        loss_sum: float,
+        token_count: int,
+        correct_tokens: int,
+    ) -> None:
         """Add the statistics of one batch."""
         self.loss_sum += loss_sum
         self.token_count += token_count
         self.correct_tokens += correct_tokens
 
-    def as_tensor(self, device: torch.device) -> Tensor:
+    def as_tensor(
+        self,
+        device: torch.device,
+    ) -> Tensor:
         """Pack the sums into a float64 tensor for ``all_reduce``."""
         return torch.tensor(
             [self.loss_sum, self.token_count, self.correct_tokens],
@@ -79,7 +96,10 @@ class TokenLossAccumulator:
         )
 
     @classmethod
-    def from_tensor(cls, values: Tensor) -> TokenLossAccumulator:
+    def from_tensor(
+        cls,
+        values: Tensor,
+    ) -> TokenLossAccumulator:
         """Rebuild an accumulator from a tensor produced by :meth:`as_tensor`."""
         loss_sum, token_count, correct = values.tolist()
         return cls(loss_sum=loss_sum, token_count=int(token_count), correct_tokens=int(correct))
@@ -106,15 +126,26 @@ class TrainingHistory:
 
     rows: list[dict[str, Any]] = field(default_factory=list)
 
-    def append(self, row: dict[str, Any]) -> None:
+    def append(
+        self,
+        row: dict[str, Any],
+    ) -> None:
         """Record the metrics of one epoch."""
         self.rows.append(dict(row))
 
-    def series(self, key: str) -> list[float]:
+    def series(
+        self,
+        key: str,
+    ) -> list[float]:
         """Return the values of ``key`` across epochs, skipping epochs where it is missing."""
         return [float(row[key]) for row in self.rows if key in row and row[key] is not None]
 
-    def best(self, key: str, *, minimize: bool) -> tuple[int, float] | None:
+    def best(
+        self,
+        key: str,
+        *,
+        minimize: bool,
+    ) -> tuple[int, float] | None:
         """Return ``(epoch, value)`` of the best value for ``key``, or ``None`` if absent."""
         candidates = [
             (int(row["epoch"]), float(row[key])) for row in self.rows if row.get(key) is not None
@@ -127,12 +158,18 @@ class TrainingHistory:
             else max(candidates, key=lambda item: item[1])
         )
 
-    def save_json(self, path: Path) -> None:
+    def save_json(
+        self,
+        path: Path,
+    ) -> None:
         """Write the history as JSON."""
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(self.rows, indent=2), encoding="utf-8")
 
-    def save_csv(self, path: Path) -> None:
+    def save_csv(
+        self,
+        path: Path,
+    ) -> None:
         """Write the history as CSV with the union of all columns."""
         path.parent.mkdir(parents=True, exist_ok=True)
         columns: list[str] = []

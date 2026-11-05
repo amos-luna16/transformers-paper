@@ -41,7 +41,10 @@ TINY_PAIRS: list[tuple[str, str]] = [
 
 
 @pytest.fixture(autouse=True)
-def _isolate_environment(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+def _isolate_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
     """Run every test from a temporary directory with no settings-related env vars."""
     import os
 
@@ -51,7 +54,9 @@ def _isolate_environment(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
 
 
-def make_tiny_settings(artifacts_dir) -> Settings:
+def make_tiny_settings(
+    artifacts_dir,
+) -> Settings:
     """Small, fast settings for CPU tests writing under ``artifacts_dir``."""
     return Settings(
         data=DataSettings(
@@ -94,7 +99,9 @@ def make_tiny_settings(artifacts_dir) -> Settings:
     )
 
 
-def make_tiny_bundle(settings: Settings) -> DataBundle:
+def make_tiny_bundle(
+    settings: Settings,
+) -> DataBundle:
     """A DataBundle built from the in-memory tiny corpus."""
     tokenizer = WordTokenizer()
     train_pairs, validation_pairs = TINY_PAIRS[:16], TINY_PAIRS[16:]
@@ -118,7 +125,9 @@ def make_tiny_bundle(settings: Settings) -> DataBundle:
 
 
 @pytest.fixture
-def tiny_settings(tmp_path) -> Settings:
+def tiny_settings(
+    tmp_path,
+) -> Settings:
     """Small, fast settings for CPU tests."""
     return make_tiny_settings(tmp_path / "artifacts")
 
@@ -130,6 +139,8 @@ def tokenizer() -> WordTokenizer:
 
 
 @pytest.fixture
-def tiny_bundle(tiny_settings: Settings) -> DataBundle:
+def tiny_bundle(
+    tiny_settings: Settings,
+) -> DataBundle:
     """A DataBundle built from the in-memory tiny corpus."""
     return make_tiny_bundle(tiny_settings)

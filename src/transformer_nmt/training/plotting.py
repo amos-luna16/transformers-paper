@@ -24,7 +24,12 @@ LINE_WIDTH = 2.0
 MARKER_SIZE = 6.0
 
 
-def _style_axes(axes: Axes, title: str, ylabel: str, xlabel: str = "epoch") -> None:
+def _style_axes(
+    axes: Axes,
+    title: str,
+    ylabel: str,
+    xlabel: str = "epoch",
+) -> None:
     """Apply the recessive grid/spine styling shared by every panel."""
     axes.set_facecolor(SURFACE)
     axes.set_title(title, loc="left", fontsize=11, color=TEXT_PRIMARY, fontweight="bold")
@@ -39,7 +44,12 @@ def _style_axes(axes: Axes, title: str, ylabel: str, xlabel: str = "epoch") -> N
 
 
 def _plot_series(
-    axes: Axes, x: Sequence[float], y: Sequence[float], *, label: str, color: str
+    axes: Axes,
+    x: Sequence[float],
+    y: Sequence[float],
+    *,
+    label: str,
+    color: str,
 ) -> None:
     """Draw one line-with-markers series."""
     axes.plot(
@@ -47,12 +57,20 @@ def _plot_series(
     )
 
 
-def _epochs_for(history: TrainingHistory, key: str) -> list[int]:
+def _epochs_for(
+    history: TrainingHistory,
+    key: str,
+) -> list[int]:
     """Return the epochs where ``key`` is present."""
     return [int(row["epoch"]) for row in history.rows if row.get(key) is not None]
 
 
-def plot_training_curves(history: TrainingHistory, output_path: Path, *, title: str) -> Path:
+def plot_training_curves(
+    history: TrainingHistory,
+    output_path: Path,
+    *,
+    title: str,
+) -> Path:
     """Render the per-epoch training dashboard as small multiples and save it as PNG.
 
     Panels: loss (train vs validation, best epoch annotated), validation perplexity, token
@@ -169,7 +187,10 @@ def plot_training_curves(history: TrainingHistory, output_path: Path, *, title: 
 
 
 def plot_step_dynamics(
-    step_records: Sequence[dict[str, Any]], output_path: Path, *, title: str
+    step_records: Sequence[dict[str, Any]],
+    output_path: Path,
+    *,
+    title: str,
 ) -> Path:
     """Render step-level training loss and the learning-rate schedule actually followed.
 

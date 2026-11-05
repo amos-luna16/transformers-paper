@@ -33,7 +33,9 @@ class HardwareInfo:
         return asdict(self)
 
 
-def resolve_device(preferred: str | None = None) -> torch.device:
+def resolve_device(
+    preferred: str | None = None,
+) -> torch.device:
     """Pick the best available device unless ``preferred`` is given.
 
     Args:
@@ -51,7 +53,9 @@ def resolve_device(preferred: str | None = None) -> torch.device:
     return torch.device("cpu")
 
 
-def collect_hardware_info(device: torch.device) -> HardwareInfo:
+def collect_hardware_info(
+    device: torch.device,
+) -> HardwareInfo:
     """Gather hardware/software metadata for experiment tracking.
 
     Args:
@@ -89,7 +93,9 @@ def collect_hardware_info(device: torch.device) -> HardwareInfo:
     )
 
 
-def peak_memory_gb(device: torch.device) -> float | None:
+def peak_memory_gb(
+    device: torch.device,
+) -> float | None:
     """Return the peak allocated CUDA memory in GiB since the last reset, if applicable."""
     if device.type != "cuda":
         return None

@@ -19,12 +19,16 @@ logger = logging.getLogger(__name__)
 MAX_PARAM_VALUE_LENGTH = 500
 
 
-def _stringify_params(params: Mapping[str, Any]) -> dict[str, str]:
+def _stringify_params(
+    params: Mapping[str, Any],
+) -> dict[str, str]:
     """Render parameter values as strings within MLflow's length limit."""
     return {key: str(value)[:MAX_PARAM_VALUE_LENGTH] for key, value in params.items()}
 
 
-def ensure_experiment(settings: TrackingSettings) -> str:
+def ensure_experiment(
+    settings: TrackingSettings,
+) -> str:
     """Create the MLflow experiment if needed, pinning its artifact location, and return its id.
 
     Args:
@@ -46,7 +50,12 @@ def ensure_experiment(settings: TrackingSettings) -> str:
 class ExperimentTracker:
     """Thin MLflow wrapper that becomes a no-op on non-main ranks or when disabled."""
 
-    def __init__(self, settings: TrackingSettings, *, enabled: bool = True) -> None:
+    def __init__(
+        self,
+        settings: TrackingSettings,
+        *,
+        enabled: bool = True,
+    ) -> None:
         """Configure the tracking store and experiment.
 
         Args:
@@ -73,7 +82,10 @@ class ExperimentTracker:
 
     @contextlib.contextmanager
     def run(
-        self, run_name: str, *, tags: Mapping[str, str] | None = None
+        self,
+        run_name: str,
+        *,
+        tags: Mapping[str, str] | None = None,
     ) -> Iterator[ExperimentTracker]:
         """Open an MLflow run for the duration of the ``with`` block.
 
@@ -97,17 +109,28 @@ class ExperimentTracker:
             )
             yield self
 
-    def log_params(self, params: Mapping[str, Any]) -> None:
+    def log_params(
+        self,
+        params: Mapping[str, Any],
+    ) -> None:
         """Log parameters (values are stringified and truncated)."""
         if self.enabled and params:
             mlflow.log_params(_stringify_params(params))
 
-    def set_tags(self, tags: Mapping[str, Any]) -> None:
+    def set_tags(
+        self,
+        tags: Mapping[str, Any],
+    ) -> None:
         """Attach or update run tags."""
         if self.enabled and tags:
             mlflow.set_tags({key: str(value) for key, value in tags.items()})
 
-    def log_metrics(self, metrics: Mapping[str, float | int | None], *, step: int) -> None:
+    def log_metrics(
+        self,
+        metrics: Mapping[str, float | int | None],
+        *,
+        step: int,
+    ) -> None:
         """Log numeric metrics at ``step``; ``None`` values are skipped."""
         if not self.enabled:
             return
@@ -115,12 +138,20 @@ class ExperimentTracker:
         if clean:
             mlflow.log_metrics(clean, step=step)
 
-    def log_artifact(self, path: Path, artifact_path: str | None = None) -> None:
+    def log_artifact(
+        self,
+        path: Path,
+        artifact_path: str | None = None,
+    ) -> None:
         """Upload a file to the run's artifact store."""
         if self.enabled:
             mlflow.log_artifact(str(path), artifact_path=artifact_path)
 
-    def log_figure(self, figure: Figure | Path, artifact_file: str) -> None:
+    def log_figure(
+        self,
+        figure: Figure | Path,
+        artifact_file: str,
+    ) -> None:
         """Upload a matplotlib figure or an already rendered image file."""
         if not self.enabled:
             return
@@ -130,18 +161,29 @@ class ExperimentTracker:
         else:
             mlflow.log_figure(figure, artifact_file)
 
-    def log_dict(self, payload: Mapping[str, Any] | list[Any], artifact_file: str) -> None:
+    def log_dict(
+        self,
+        payload: Mapping[str, Any] | list[Any],
+        artifact_file: str,
+    ) -> None:
         """Upload a JSON/YAML-serialisable object as an artifact."""
         if self.enabled:
             mlflow.log_dict(payload, artifact_file)
 
-    def log_text(self, text: str, artifact_file: str) -> None:
+    def log_text(
+        self,
+        text: str,
+        artifact_file: str,
+    ) -> None:
         """Upload free text as an artifact."""
         if self.enabled:
             mlflow.log_text(text, artifact_file)
 
 
-def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
+def _table_exists(
+    connection: sqlite3.Connection,
+    table: str,
+) -> bool:
     """Return whether ``table`` exists in the SQLite database."""
     row = connection.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
@@ -149,7 +191,9 @@ def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
     return row is not None
 
 
-def relocate_mlflow_store(artifacts_dir: Path) -> int:
+def relocate_mlflow_store(
+    artifacts_dir: Path,
+) -> int:
     """Point a copied MLflow SQLite store at the artifact files in their new location.
 
     MLflow records absolute ``file://`` artifact URIs. A store produced inside a remote

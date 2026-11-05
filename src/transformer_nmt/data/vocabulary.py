@@ -17,7 +17,10 @@ from transformer_nmt.config import (
 class Vocabulary:
     """Bidirectional token/index mapping with the four reserved special tokens first."""
 
-    def __init__(self, tokens: Sequence[str]) -> None:
+    def __init__(
+        self,
+        tokens: Sequence[str],
+    ) -> None:
         """Create a vocabulary from an ordered token list.
 
         Args:
@@ -95,19 +98,33 @@ class Vocabulary:
         """Return the vocabulary size."""
         return len(self._tokens)
 
-    def __contains__(self, token: str) -> bool:
+    def __contains__(
+        self,
+        token: str,
+    ) -> bool:
         """Return whether ``token`` has a dedicated index."""
         return token in self._index_by_token
 
-    def token_to_index(self, token: str) -> int:
+    def token_to_index(
+        self,
+        token: str,
+    ) -> int:
         """Map a token to its index, falling back to ``<unk>``."""
         return self._index_by_token.get(token, UNK_INDEX)
 
-    def index_to_token(self, index: int) -> str:
+    def index_to_token(
+        self,
+        index: int,
+    ) -> str:
         """Map an index back to its token."""
         return self._tokens[index]
 
-    def encode(self, tokens: Sequence[str], *, add_special_tokens: bool = False) -> list[int]:
+    def encode(
+        self,
+        tokens: Sequence[str],
+        *,
+        add_special_tokens: bool = False,
+    ) -> list[int]:
         """Convert tokens into indices, optionally wrapping them in ``<sos>``/``<eos>``.
 
         Args:
@@ -122,7 +139,12 @@ class Vocabulary:
             return [SOS_INDEX, *indices, EOS_INDEX]
         return indices
 
-    def decode(self, indices: Iterable[int], *, skip_special_tokens: bool = True) -> list[str]:
+    def decode(
+        self,
+        indices: Iterable[int],
+        *,
+        skip_special_tokens: bool = True,
+    ) -> list[str]:
         """Convert indices back into tokens, stopping at the first ``<eos>``.
 
         Args:
@@ -141,7 +163,10 @@ class Vocabulary:
             tokens.append(self._tokens[index])
         return tokens
 
-    def save(self, path: Path) -> None:
+    def save(
+        self,
+        path: Path,
+    ) -> None:
         """Serialise the vocabulary to a JSON file.
 
         Args:
@@ -151,7 +176,10 @@ class Vocabulary:
         path.write_text(json.dumps({"tokens": self._tokens}, ensure_ascii=False), encoding="utf-8")
 
     @classmethod
-    def load(cls, path: Path) -> Vocabulary:
+    def load(
+        cls,
+        path: Path,
+    ) -> Vocabulary:
         """Deserialise a vocabulary written by :meth:`save`.
 
         Args:

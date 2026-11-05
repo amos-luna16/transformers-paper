@@ -53,7 +53,10 @@ image = (
 )
 
 
-def _copy_if_exists(source: Path, destination: Path) -> bool:
+def _copy_if_exists(
+    source: Path,
+    destination: Path,
+) -> bool:
     """Copy a file or directory tree when ``source`` exists; return whether anything was copied."""
     if not source.exists():
         return False
@@ -65,7 +68,9 @@ def _copy_if_exists(source: Path, destination: Path) -> bool:
     return True
 
 
-def acquire_volume_lock(owner: str) -> None:
+def acquire_volume_lock(
+    owner: str,
+) -> None:
     """Block until this call owns the Volume write lock; stale holders are evicted.
 
     The MLflow SQLite database is copied in and out of the Volume, so two concurrent runs
@@ -83,14 +88,19 @@ def acquire_volume_lock(owner: str) -> None:
         time.sleep(30)
 
 
-def release_volume_lock(owner: str) -> None:
+def release_volume_lock(
+    owner: str,
+) -> None:
     """Release the Volume write lock if this call still owns it."""
     holder = locks.get(LOCK_KEY)
     if holder is not None and holder.get("owner") == owner:
         locks.pop(LOCK_KEY, None)
 
 
-def restore_state_from_volume(volume_artifacts_dir: Path, data_file_name: str) -> list[str]:
+def restore_state_from_volume(
+    volume_artifacts_dir: Path,
+    data_file_name: str,
+) -> list[str]:
     """Seed the container-local artifacts dir with the MLflow database and cached corpus.
 
     The SQLite store is copied to local disk because Modal Volumes are optimised for
@@ -104,7 +114,9 @@ def restore_state_from_volume(volume_artifacts_dir: Path, data_file_name: str) -
 
 
 def persist_state_to_volume(
-    volume_artifacts_dir: Path, run_name: str | None, data_file_name: str
+    volume_artifacts_dir: Path,
+    run_name: str | None,
+    data_file_name: str,
 ) -> list[str]:
     """Copy the MLflow store, run artifacts, checkpoints and plots to the Volume.
 
@@ -213,7 +225,12 @@ def train_on_gpu(
     return {"summary": summary, "gpus": gpus, "persisted": persisted}
 
 
-def _download_entries(remote_prefix: str, local_root: Path, *, skip: Iterable[str] = ()) -> int:
+def _download_entries(
+    remote_prefix: str,
+    local_root: Path,
+    *,
+    skip: Iterable[str] = (),
+) -> int:
     """Download every file below ``remote_prefix`` on the Volume into ``local_root``."""
     from modal.volume import FileEntryType
 
@@ -253,7 +270,11 @@ def latest_run_name_on_volume() -> str:
     return Path(max(runs, key=lambda entry: entry.mtime).path).name
 
 
-def download_results(run_name: str, *, all_checkpoints: bool) -> Path:
+def download_results(
+    run_name: str,
+    *,
+    all_checkpoints: bool,
+) -> Path:
     """Pull the MLflow store and the run's files to ``artifacts/modal`` and fix artifact URIs."""
     from transformer_nmt.training.tracking import relocate_mlflow_store
 
@@ -320,4 +341,4 @@ def main(
         db_path = local_dir / "mlflow.db"
         print("\nNext steps:")
         print(f"  uv run mlflow ui --backend-store-uri sqlite:///{db_path} --port 5001")
-        print('  uv run python scripts/translate.py "I love this movie."')
+        print("  uv run fastapi dev   # then POST /translate, see README")

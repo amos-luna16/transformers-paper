@@ -16,7 +16,7 @@ from tqdm.auto import tqdm
 from transformer_nmt.config import Settings
 from transformer_nmt.data.dataset import PadCollator, build_dataloader
 from transformer_nmt.data.pipeline import DataBundle, prepare_data
-from transformer_nmt.model.transformer import Seq2SeqTransformer
+from transformer_nmt.model.encoder_decoder import EncoderDecoder
 from transformer_nmt.training.checkpoint import (
     BEST_CHECKPOINT_NAME,
     BEST_SUMMARY_NAME,
@@ -81,7 +81,10 @@ class TrainingSummary:
         return asdict(self)
 
 
-def language_pair_slug(source_language: str, target_language: str) -> str:
+def language_pair_slug(
+    source_language: str,
+    target_language: str,
+) -> str:
     """Short corpus-style tag for a language pair, e.g. ``eng-spa`` for English to Spanish."""
     return f"{source_language[:3].lower()}-{target_language[:3].lower()}"
 
@@ -102,7 +105,7 @@ def generate_run_name(
 
 
 class Trainer:
-    """Mixed-precision, optionally distributed trainer for :class:`Seq2SeqTransformer`."""
+    """Mixed-precision, optionally distributed trainer for :class:`EncoderDecoder`."""
 
     def __init__(
         self,
@@ -171,11 +174,11 @@ class Trainer:
     # ------------------------------------------------------------------ construction helpers
     def _build_model(self) -> nn.Module:
         """Instantiate the Transformer and wrap it for compilation/DDP as configured."""
-        model: nn.Module = Seq2SeqTransformer(
-            source_vocab_size=len(self.data.source_vocab),
-            target_vocab_size=len(self.data.target_vocab),
+        model: nn.Module = EncoderDecoder(
+            src_vocab_size=len(self.data.source_vocab),
+            tgt_vocab_size=len(self.data.target_vocab),
             config=self.settings.model,
-            pad_index=self.pad_index,
+            pad_idx=self.pad_index,
         ).to(self.device)
         if self.settings.training.compile_model:
             model = torch.compile(model, dynamic=True)
@@ -191,7 +194,7 @@ class Trainer:
         for name, parameter in unwrap_model(self.model).named_parameters():
             if not parameter.requires_grad:
                 continue
-            (no_decay if parameter.dim() < 2 or "embedding" in name else decay).append(parameter)
+            (no_decay if parameter.dim() < 2 or "token_emb" in name else decay).append(parameter)
         base_lr = 1.0 if training.scheduler == "noam" else training.peak_learning_rate
         return torch.optim.AdamW(
             [
@@ -203,7 +206,11 @@ class Trainer:
             eps=training.adam_epsilon,
         )
 
-    def _build_loader(self, *, train: bool) -> tuple[Any, Any]:
+    def _build_loader(
+        self,
+        *,
+        train: bool,
+    ) -> tuple[Any, Any]:
         """Create the train or validation DataLoader for this rank."""
         collator = PadCollator(self.pad_index, self.settings.data.pad_to_multiple_of)
         return build_dataloader(
@@ -223,17 +230,27 @@ class Trainer:
         return self.settings.training.batch_size * self.context.world_size
 
     # ------------------------------------------------------------------ one epoch
-    def _split_target(self, target: Tensor) -> tuple[Tensor, Tensor]:
+    def _split_target(
+        self,
+        target: Tensor,
+    ) -> tuple[Tensor, Tensor]:
         """Return decoder input (``<sos>`` + tokens) and expected output (tokens + ``<eos>``)."""
         return target[:, :-1], target[:, 1:]
 
-    def _batch_statistics(self, logits: Tensor, target_output: Tensor) -> tuple[Tensor, Tensor]:
+    def _batch_statistics(
+        self,
+        logits: Tensor,
+        target_output: Tensor,
+    ) -> tuple[Tensor, Tensor]:
         """Return ``(non_pad_tokens, correct_tokens)`` as device tensors (no host sync)."""
         mask = target_output != self.pad_index
         correct = ((logits.argmax(dim=-1) == target_output) & mask).sum()
         return mask.sum(), correct
 
-    def _train_epoch(self, epoch: int) -> dict[str, float]:
+    def _train_epoch(
+        self,
+        epoch: int,
+    ) -> dict[str, float]:
         """Run one optimisation pass over the training shard of this rank."""
         training = self.settings.training
         self.model.train()
@@ -371,7 +388,9 @@ class Trainer:
 
     @torch.no_grad()
     def _decode_validation_subset(
-        self, num_samples: int, batch_size: int = 128
+        self,
+        num_samples: int,
+        batch_size: int = 128,
     ) -> tuple[list[str], list[str], list[str]]:
         """Greedy-decode the first ``num_samples`` validation sentences (main process only)."""
         model = unwrap_model(self.model)
@@ -384,8 +403,8 @@ class Trainer:
             with autocast_context(self.precision, self.device):
                 generated = model.greedy_decode(
                     source.to(self.device),
-                    sos_index=self.data.target_vocab.sos_index,
-                    eos_index=self.data.target_vocab.eos_index,
+                    sos_idx=self.data.target_vocab.sos_index,
+                    eos_idx=self.data.target_vocab.eos_index,
                     max_len=self.settings.data.max_seq_len,
                 )
             for i, row in zip(indices, generated.tolist(), strict=True):
@@ -409,14 +428,21 @@ class Trainer:
         return bleu
 
     # ------------------------------------------------------------------ checkpoints & bookkeeping
-    def _is_improvement(self, value: float) -> bool:
+    def _is_improvement(
+        self,
+        value: float,
+    ) -> bool:
         """Whether ``value`` beats the best value recorded so far for the selection metric."""
         if self.best_value is None:
             return True
         minimize = self.settings.training.best_metric.endswith("loss")
         return value < self.best_value if minimize else value > self.best_value
 
-    def _save_checkpoints(self, epoch: int, metrics: dict[str, float]) -> None:
+    def _save_checkpoints(
+        self,
+        epoch: int,
+        metrics: dict[str, float],
+    ) -> None:
         """Write last/best/periodic checkpoints (main process only)."""
         if not self.context.is_main_process:
             return
@@ -479,7 +505,11 @@ class Trainer:
         )
         return bool(all_reduce_sum(flag, self.context).item() > 0)
 
-    def _log_epoch(self, epoch: int, metrics: dict[str, float]) -> None:
+    def _log_epoch(
+        self,
+        epoch: int,
+        metrics: dict[str, float],
+    ) -> None:
         """Emit the one-line epoch summary."""
         bleu = metrics.get("val/bleu")
         logger.info(
@@ -502,7 +532,10 @@ class Trainer:
             else "",
         )
 
-    def _finalize(self, total_seconds: float) -> TrainingSummary:
+    def _finalize(
+        self,
+        total_seconds: float,
+    ) -> TrainingSummary:
         """Persist history, plots, sample translations and artifacts (main process only)."""
         final_metrics = dict(self.history.rows[-1]) if self.history.rows else {}
         final_metrics.pop("epoch", None)

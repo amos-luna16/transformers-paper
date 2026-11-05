@@ -24,7 +24,9 @@ BestMetricName = Literal["val/loss", "val/bleu"]
 ENV_FILE = ".env"
 
 
-def _section_config(prefix: str) -> SettingsConfigDict:
+def _section_config(
+    prefix: str,
+) -> SettingsConfigDict:
     """Build the shared pydantic-settings configuration for one settings section.
 
     Args:
@@ -92,10 +94,6 @@ class ModelSettings(BaseSettings):
     dropout: float = Field(default=0.1, ge=0.0, lt=1.0)
     max_position_embeddings: int = Field(
         default=256, ge=8, description="Length of the sinusoidal positional-encoding table."
-    )
-    norm_first: bool = Field(
-        default=True,
-        description="Pre-LayerNorm residual blocks (True) or the paper's Post-LayerNorm (False).",
     )
     tie_target_embeddings: bool = Field(
         default=True,
@@ -215,9 +213,6 @@ class InferenceSettings(BaseSettings):
 
     model_config = _section_config("INFERENCE_")
 
-    checkpoint_path: Path | None = Field(
-        default=None, description="Explicit checkpoint; defaults to the best run on disk."
-    )
     beam_size: int = Field(default=4, ge=1, description="1 selects greedy decoding.")
     max_decode_len: int = Field(default=40, ge=2)
     length_penalty: float = Field(default=0.6, ge=0.0, description="Beam-search length penalty.")
@@ -255,7 +250,10 @@ class ModalSettings(BaseSettings):
 
     @field_validator("gpu")
     @classmethod
-    def _normalise_gpu(cls, value: str) -> str:
+    def _normalise_gpu(
+        cls,
+        value: str,
+    ) -> str:
         """Strip whitespace and reject an embedded ``:count`` suffix."""
         value = value.strip()
         if ":" in value:
@@ -309,7 +307,10 @@ class Settings(BaseModel):
             )
         return self
 
-    def with_overrides(self, **sections: dict[str, Any]) -> Settings:
+    def with_overrides(
+        self,
+        **sections: dict[str, Any],
+    ) -> Settings:
         """Return a copy with field overrides applied per section.
 
         Args:
@@ -330,7 +331,11 @@ class Settings(BaseModel):
             )
         return type(self).model_validate({**dict(self), **updated})
 
-    def to_flat_dict(self, *, include_secrets: bool = False) -> dict[str, Any]:
+    def to_flat_dict(
+        self,
+        *,
+        include_secrets: bool = False,
+    ) -> dict[str, Any]:
         """Flatten every section to ``section.field -> value`` for parameter logging.
 
         Args:
@@ -351,7 +356,10 @@ class Settings(BaseModel):
                 flat[f"{section_name}.{field_name}"] = value
         return flat
 
-    def to_environment(self, *sections: str) -> dict[str, str]:
+    def to_environment(
+        self,
+        *sections: str,
+    ) -> dict[str, str]:
         """Serialise sections as ``PREFIX_FIELD=value`` pairs understood by the same settings.
 
         This is how the local configuration travels to a remote container: every value is

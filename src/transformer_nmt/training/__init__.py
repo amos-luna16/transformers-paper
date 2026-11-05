@@ -1,5 +1,4 @@
 from transformer_nmt.training.checkpoint import (
-    find_best_checkpoint,
     load_checkpoint,
     save_checkpoint,
 )
@@ -13,7 +12,6 @@ __all__ = [
     "TrainingHistory",
     "TrainingSummary",
     "corpus_bleu",
-    "find_best_checkpoint",
     "load_checkpoint",
     "relocate_mlflow_store",
     "run_training",

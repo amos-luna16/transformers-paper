@@ -5,7 +5,9 @@ from pydantic import BaseModel, Field, field_validator
 LanguageCode = str
 
 
-def _normalise_code(value: str) -> str:
+def _normalise_code(
+    value: str,
+) -> str:
     """Lower-case a language code and reject anything that is not two letters."""
     code = value.strip().lower()
     if len(code) != 2 or not code.isalpha():

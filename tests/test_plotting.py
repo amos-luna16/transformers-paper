@@ -2,7 +2,9 @@ from transformer_nmt.training.metrics import TrainingHistory
 from transformer_nmt.training.plotting import plot_step_dynamics, plot_training_curves
 
 
-def test_plots_are_written(tmp_path):
+def test_plots_are_written(
+    tmp_path,
+):
     history = TrainingHistory()
     for epoch in (1, 2, 3):
         history.append(

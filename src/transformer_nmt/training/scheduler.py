@@ -9,7 +9,12 @@ from torch.optim.lr_scheduler import LambdaLR
 from transformer_nmt.config import SchedulerName
 
 
-def noam_learning_rate(step: int, d_model: int, warmup_steps: int, scale: float = 1.0) -> float:
+def noam_learning_rate(
+    step: int,
+    d_model: int,
+    warmup_steps: int,
+    scale: float = 1.0,
+) -> float:
     """Learning rate of the schedule in section 5.3 of the paper.
 
     ``lr = scale * d_model^-0.5 * min(step^-0.5, step * warmup_steps^-1.5)``: linear warm-up
@@ -29,7 +34,10 @@ def noam_learning_rate(step: int, d_model: int, warmup_steps: int, scale: float 
 
 
 def warmup_cosine_factor(
-    step: int, warmup_steps: int, total_steps: int, min_lr_ratio: float = 0.05
+    step: int,
+    warmup_steps: int,
+    total_steps: int,
+    min_lr_ratio: float = 0.05,
 ) -> float:
     """Multiplier on the peak learning rate for linear warm-up followed by cosine decay.
 

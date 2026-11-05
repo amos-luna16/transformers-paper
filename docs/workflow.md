@@ -17,7 +17,7 @@ If you only remember one thing: **everything starts from a settings file and end
 |---|---|---|
 | Settings | The single rulebook. Every knob (model size, epochs, GPU type, folder names) is read from `.env` and environment variables. | `src/transformer_nmt/config.py` |
 | Data pipeline | Downloads the English-French sentence pairs, cleans them, splits them into training and validation sets and turns words into numbers. | `src/transformer_nmt/data/` |
-| Model | The Transformer network itself (encoder, decoder, attention). | `src/transformer_nmt/model/` |
+| Model | The Transformer network itself: `EncoderBlock`s and `DecoderBlock`s stacked inside `Encoder` and `Decoder`, combined by `EncoderDecoder`. | `src/transformer_nmt/model/` |
 | Trainer | Runs the learning loop on one or many GPUs, measures progress, saves checkpoints and reports to MLflow. | `src/transformer_nmt/training/` |
 | MLflow | The lab notebook: a one-file database plus a folder of files recording every experiment (parameters, metrics per epoch, plots, best checkpoint). | `artifacts/mlflow.db` for laptop runs, `artifacts/modal/mlflow.db` for runs pulled from Modal |
 | Modal launcher | The courier: packages the code, rents GPUs on Modal, runs the training there and brings the results back. | `scripts/modal_train.py` |
@@ -38,7 +38,7 @@ Three storage locations matter, and the diagrams always say which one is acting:
 
 ## 2. Map of the Python files
 
-The arrows mean "uses" or "calls". The five entry points you actually run are at the top (training on
+The arrows mean "uses" or "calls". The four entry points you actually run are at the top (training on
 the left, inference on the right); the shared building blocks are at the bottom. Every entry point
 also reads the Settings rulebook, which is left out of the picture to keep it readable.
 
@@ -49,7 +49,6 @@ flowchart TD
         TR["scripts/train.py<br/>training CLI, run by torchrun"]
         FA["fastapi dev / fastapi run<br/>local inference API"]
         MS["scripts/modal_serve.py<br/>inference API hosted on Modal"]
-        CLI["scripts/translate.py<br/>inference from the terminal"]
     end
 
     subgraph Training["Training stack (src/transformer_nmt/training)"]
@@ -62,7 +61,7 @@ flowchart TD
 
     subgraph Core["Shared building blocks"]
         DAT["data/: download, normalise,<br/>vocabulary, dataset, loaders"]
-        MDL["model/: Seq2SeqTransformer<br/>encoder, decoder, attention"]
+        MDL["model/: EncoderDecoder<br/>Encoder/Decoder of EncoderBlocks/DecoderBlocks"]
     end
 
     subgraph Inference["Inference stack"]
@@ -85,7 +84,6 @@ flowchart TD
     MS --> API
     API --> REG --> TLT
     REG --> CKP
-    CLI --> TLT
     TLT --> CKP
     TLT --> MDL
     TLT --> DAT
@@ -99,8 +97,8 @@ Key facts to take from the map:
 - `scripts/train.py` is the only training entry point. It works identically on a laptop and in Modal;
   the environment variables it receives decide where files go.
 - MLflow is written by exactly one module, `training/tracking.py`. Nothing in inference reads MLflow.
-- Inference (API, Modal host and terminal tool) finds models through `training/checkpoint.py`, which
-  looks for the small `best.json` cards that training leaves next to each `best.pt`.
+- Inference (local API and Modal host) finds models through `training/checkpoint.py`, which looks
+  for the small `best.json` cards that training leaves next to each `best.pt`.
 
 ## 3. Flow A: launching a training run on Modal
 
@@ -325,20 +323,16 @@ artifacts/modal/checkpoints/<run_name>/
   history.json/csv   per-epoch metrics
 ```
 
-`training/checkpoint.py` provides the shared rule used by the terminal tool, the FastAPI service
-and the Modal host:
+`training/checkpoint.py` provides the shared rule used by the FastAPI service and the Modal host:
 
 1. `discover_checkpoints` walks a folder recursively and collects every `best.json` whose checkpoint
-   file (the one named in its `checkpoint_file` field) sits next to it.
+   file (the one named in its `checkpoint_file` field) and `settings.json` sit next to it.
 2. `rank_checkpoints` sets rehearsal (smoke) runs aside because their validation set is different, so
    their numbers are not comparable; they are only considered when no full run exists. It then
    requires that the remaining runs were selected with the same yardstick (loss or BLEU) and sorts
    them best-first: lowest loss, or highest BLEU if a run was selected on BLEU. If runs with two
    different yardsticks coexist and none is chosen, it stops with an error.
-3. `find_best_checkpoint` returns the first entry. This is the path `scripts/translate.py` takes: the
-   terminal tool only falls back to smoke runs when no full run exists, and in the mixed-yardstick case
-   it stops with an error (`Runs were selected with different metrics ...`); the workaround is to pass
-   `--checkpoint` or set `INFERENCE_CHECKPOINT_PATH`.
+3. The first entry of the ranking is the best model of that scan.
 
 The FastAPI service and the Modal host apply the same ranking through `ModelRegistry.models()`
 (`api/registry.py`) with three additions: each run's language direction is read from its
@@ -347,15 +341,9 @@ aside in step 2 are appended at the end of their direction so `GET /models` stil
 if runs were selected with different yardsticks they are grouped by yardstick instead of raising an
 error.
 
-One caveat to know about: MLflow keeps a second `best.json` + `best.pt` pair for each run under
-`mlartifacts/<experiment>/<run_id>/artifacts/checkpoints/` (uploaded in Flow B step 16 and downloaded
-in Flow A step 11). When the scan root is `artifacts/`, that copy also passes the "weights next to the
-card" test, so a run that was logged to MLflow can appear twice in `GET /models`, the second time with
-a `checkpoint_path` inside `mlartifacts/`. The copy under `checkpoints/<run_name>/` sorts first and is
-the one loaded; the MLflow copy cannot be loaded on its own because `settings.json` and the
-vocabularies were uploaded to the neighbouring `run/` folder. The Modal-hosted API is not affected
-because it scans `/vol/artifacts/checkpoints` only. Pointing `INFERENCE_MODELS_ROOT` at
-`artifacts/modal/checkpoints` removes the duplicates locally as well.
+MLflow keeps a second copy of `best.json` and `best.pt` under
+`mlartifacts/<experiment>/<run_id>/artifacts/checkpoints/`, but without `settings.json` beside them, so
+those copies are never listed as models.
 
 ## 7. Flow C: translating with the FastAPI service
 
@@ -486,14 +474,7 @@ sequenceDiagram
 - The container shuts down after 120 seconds without requests and starts again on the next one,
   which is where the cold-start delay of about 15 seconds comes from.
 
-## 9. Flow E: translating from the terminal
-
-`uv run python scripts/translate.py "I love this movie."` uses the same pieces without a web server:
-the Translator asks `checkpoint.py` for the best run under `artifacts/` (or uses the `--checkpoint`
-you pass), loads it and prints the translation. `--beam-size 1` gives greedy decoding; with no
-sentence it opens an interactive prompt.
-
-## 10. Where the settings come from
+## 9. Where the settings come from
 
 ```mermaid
 flowchart LR
@@ -503,7 +484,7 @@ flowchart LR
     CFG -->|"to_environment(): data, model,<br/>training, tracking (training container only)"| REM["environment of the training container"]
     CLI -.->|"forwarded unchanged as<br/>train.py arguments"| CFG2
     REM --> CFG2["Settings rebuilt inside the container"]
-    CFG --> LOCAL["laptop programs: train.py, translate.py,<br/>FastAPI app, modal_train.py, modal_serve.py"]
+    CFG --> LOCAL["laptop programs: train.py, FastAPI app,<br/>modal_train.py, modal_serve.py"]
 ```
 
 Every section has a prefix (`DATA_`, `MODEL_`, `TRAINING_`, `TRACKING_`, `INFERENCE_`, `MODAL_`), so
@@ -516,7 +497,7 @@ local-only file path stay on the laptop; inside the container the artifacts fold
 `/root/artifacts` and any custom MLflow address is cleared so the run uses the restored database.
 The hosted inference API (Flow D) receives no settings at all and uses the defaults.
 
-## 11. End-to-end in one picture
+## 10. End-to-end in one picture
 
 ```mermaid
 flowchart LR
@@ -526,11 +507,11 @@ flowchart LR
     D --> E["5. results persisted on the Volume"]
     E --> F["6. modal_train.py downloads<br/>to artifacts/modal/"]
     F --> G["7. mlflow ui: compare runs"]
-    F --> H["8. fastapi dev or translate.py:<br/>pick a run, translate"]
+    F --> H["8. fastapi dev:<br/>pick a direction, translate"]
     E --> I["9. modal_serve.py:<br/>same API on a Modal GPU"]
 ```
 
-## 12. Glossary
+## 11. Glossary
 
 - **uv**: the tool that installs the project's libraries and runs its commands; every command in this
   repository starts with `uv run`.

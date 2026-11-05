@@ -15,7 +15,10 @@ from transformer_nmt.data.vocabulary import Vocabulary
 SentencePair = tuple[str, str]
 
 
-def load_sentence_pairs(path: Path, max_pairs: int) -> list[SentencePair]:
+def load_sentence_pairs(
+    path: Path,
+    max_pairs: int,
+) -> list[SentencePair]:
     """Read ``(source, target)`` pairs from a tab-separated file.
 
     Args:
@@ -67,13 +70,17 @@ def normalize_and_filter_pairs(
     return kept
 
 
-def deduplicate_pairs(pairs: Sequence[SentencePair]) -> list[SentencePair]:
+def deduplicate_pairs(
+    pairs: Sequence[SentencePair],
+) -> list[SentencePair]:
     """Drop exact duplicate pairs, keeping the first occurrence in the original order."""
     return list(dict.fromkeys(pairs))
 
 
 def split_pairs(
-    pairs: Sequence[SentencePair], validation_fraction: float, seed: int
+    pairs: Sequence[SentencePair],
+    validation_fraction: float,
+    seed: int,
 ) -> tuple[list[SentencePair], list[SentencePair]]:
     """Deterministic split in which no source sentence appears in both train and validation.
 
@@ -143,7 +150,10 @@ class TranslationDataset(Dataset[tuple[Tensor, Tensor]]):
         """Return the number of pairs."""
         return len(self._sources)
 
-    def __getitem__(self, index: int) -> tuple[Tensor, Tensor]:
+    def __getitem__(
+        self,
+        index: int,
+    ) -> tuple[Tensor, Tensor]:
         """Return the ``(source_ids, target_ids)`` tensors of one pair."""
         return self._sources[index], self._targets[index]
 
@@ -155,12 +165,18 @@ class PadCollator:
     pad_index: int
     pad_to_multiple_of: int = 1
 
-    def _padded_length(self, length: int) -> int:
+    def _padded_length(
+        self,
+        length: int,
+    ) -> int:
         """Round ``length`` up to the configured multiple."""
         multiple = self.pad_to_multiple_of
         return ((length + multiple - 1) // multiple) * multiple
 
-    def _pad(self, sequences: Sequence[Tensor]) -> Tensor:
+    def _pad(
+        self,
+        sequences: Sequence[Tensor],
+    ) -> Tensor:
         """Right-pad sequences into a ``[batch, length]`` tensor."""
         length = self._padded_length(max(seq.numel() for seq in sequences))
         batch = torch.full((len(sequences), length), self.pad_index, dtype=torch.long)
@@ -168,7 +184,10 @@ class PadCollator:
             batch[row, : seq.numel()] = seq
         return batch
 
-    def __call__(self, examples: Sequence[tuple[Tensor, Tensor]]) -> tuple[Tensor, Tensor]:
+    def __call__(
+        self,
+        examples: Sequence[tuple[Tensor, Tensor]],
+    ) -> tuple[Tensor, Tensor]:
         """Collate dataset items into padded source and target tensors."""
         sources, targets = zip(*examples, strict=True)
         return self._pad(sources), self._pad(targets)

@@ -73,7 +73,7 @@ the run name is generated from them.
 |---|---|---|
 | Which corpus file? | `data.source_url`, `data.archive_member` (`DATA_SOURCE_URL`, `DATA_ARCHIVE_MEMBER`) | `data/download.py: ensure_dataset_file()` |
 | Which direction? | `data.source_language`, `data.target_language`, `data.swap_pair_order` | `data/pipeline.py: prepare_data()`, run name, API language codes |
-| How big is the network? | `model.d_model`, `model.num_heads`, `model.num_encoder_layers`, `model.num_decoder_layers`, `model.dim_feedforward` | `model/transformer.py: Seq2SeqTransformer.__init__()` |
+| How big is the network? | `model.d_model`, `model.num_heads`, `model.num_encoder_layers`, `model.num_decoder_layers`, `model.dim_feedforward` | `model/encoder_decoder.py: EncoderDecoder.__init__()` |
 | How long and how fast? | `training.epochs`, `training.batch_size`, `training.warmup_steps`, `training.precision` | `training/trainer.py: Trainer` |
 | Where do results go? | `tracking.artifacts_dir`, `tracking.experiment_name`, `tracking.run_name` | `training/tracking.py`, `training/checkpoint.py` |
 
@@ -183,7 +183,7 @@ sequenceDiagram
 10. `tracker.run()` opens the MLflow run with tags (project, language pair, run type, launcher, GPU,
     precision, world size, git commit).
 11. The `Trainer` is constructed.
-12. Its constructor builds the model (`_build_model()`: `Seq2SeqTransformer` moved to the device,
+12. Its constructor builds the model (`_build_model()`: `EncoderDecoder` moved to the device,
     optionally compiled, wrapped in `DistributedDataParallel` when there are two ranks), the optimizer
     (`_build_optimizer()`: `AdamW`, β = (0.9, 0.98), ε = 1e-9, no weight decay on biases, norms and
     embeddings), the two data loaders (`_build_loader()` for train and validation), the learning-rate
@@ -281,7 +281,7 @@ sequenceDiagram
     autonumber
     participant N as Trainer._train_epoch()
     participant L as DataLoader + PadCollator
-    participant M as Seq2SeqTransformer (DDP)
+    participant M as EncoderDecoder (DDP)
     participant O as AdamW + LambdaLR
     participant K as ExperimentTracker
 
@@ -322,40 +322,45 @@ sequenceDiagram
 
 ## 6. Inside the model
 
-`Seq2SeqTransformer.forward()` in `model/transformer.py` is two calls: `encode()` then `decode()`.
+`EncoderDecoder.forward()` in `model/encoder_decoder.py` is two calls: `encode()` then `decode()`.
+The structure mirrors the reference course material: a model is a stack of **blocks** held in an
+`nn.ModuleList` (`Encoder.blocks`, `Decoder.blocks`), and each block is made of **layers**
+(LayerNorm, multi-head attention, feed-forward network, dropout).
 
 ```mermaid
 flowchart TD
-    SRC["source tokens [B, S]"] --> EMB1["encoder.token_embedding x sqrt(d)<br/>[B, S, 256]"]
-    SRC --> PM["masks.py: make_padding_mask<br/>[B, 1, 1, S], True = real token"]
-    EMB1 --> PE1["SinusoidalPositionalEncoding + dropout"]
-    PE1 --> ENC["3 x TransformerEncoderLayer<br/>self-attention + feed-forward, Pre-LN"]
+    SRC["src tokens [B, S]"] --> EMB1["Encoder.token_emb x sqrt(d)<br/>[B, S, 256]"]
+    SRC --> PM["masks.py: create_padding_mask<br/>[B, 1, 1, S], True = real token"]
+    EMB1 --> PE1["PositionalEncoding + dropout"]
+    PE1 --> ENC["Encoder.blocks: 3 x EncoderBlock<br/>ln1 + mha + dropout1<br/>ln2 + ffn + dropout2"]
     PM --> ENC
-    ENC --> LN1["LayerNorm"] --> MEM["memory [B, S, 256]"]
+    ENC --> LN1["ln_final (LayerNorm)"] --> MEM["memory [B, S, 256]"]
 
-    TGT["target_input tokens [B, T-1]"] --> EMB2["decoder.token_embedding x sqrt(d)<br/>[B, T-1, 256]"]
+    TGT["tgt tokens [B, T-1]"] --> EMB2["Decoder.token_emb x sqrt(d)<br/>[B, T-1, 256]"]
     TGT --> TM["masks.py: make_target_mask<br/>causal AND padding, [B, 1, T-1, T-1]"]
-    EMB2 --> PE2["SinusoidalPositionalEncoding + dropout"]
-    PE2 --> DEC["3 x TransformerDecoderLayer<br/>masked self-attention + cross-attention<br/>to memory + feed-forward, Pre-LN"]
+    EMB2 --> PE2["PositionalEncoding + dropout"]
+    PE2 --> DEC["Decoder.blocks: 3 x DecoderBlock<br/>ln1 + mha (masked) + dropout1<br/>ln2 + cross_mha (memory) + dropout2<br/>ln3 + ffn + dropout3"]
     TM --> DEC
     MEM --> DEC
     PM --> DEC
-    DEC --> LN2["LayerNorm"] --> OUT["output_projection<br/>(tied to the decoder embedding)<br/>logits [B, T-1, 14700]"]
+    DEC --> LN2["ln_final (LayerNorm)"] --> OUT["output_projection<br/>(tied to Decoder.token_emb)<br/>logits [B, T-1, 14700]"]
 ```
 
-- `TransformerEncoder.forward()` (`model/encoder.py`) embeds the tokens, scales by √256 as in the
-  paper, adds sinusoidal positions (`model/layers.py: SinusoidalPositionalEncoding`) and runs the
-  layer stack. Padding positions are hidden from attention by the padding mask.
-- Each `TransformerEncoderLayer` (`model/layers.py`) applies `MultiHeadAttention`
-  (`model/attention.py`, 8 heads of 32 dimensions, computed with
-  `torch.nn.functional.scaled_dot_product_attention`) and a `PositionwiseFeedForward` block
-  (256 → 512 → 256) with residual connections and LayerNorm before each sub-layer (Pre-LN).
-- `TransformerDecoder.forward()` (`model/decoder.py`) does the same for the target, with two
-  differences: its self-attention uses `make_target_mask()` so position *t* can only look at positions
-  ≤ *t* (no peeking at the answer), and each layer has a second attention that reads the encoder's
-  `memory`, restricted by the source padding mask.
-- The final `output_projection` shares its weight matrix with the decoder embedding
-  (`model.tie_target_embeddings`), which is why the model has 9.95M parameters instead of 13.7M.
+- `Encoder.forward()` (`model/encoder.py`) embeds the tokens (`token_emb`), scales by √256 as in the
+  paper, adds the sinusoidal table from `PositionalEncoding` (`model/layers.py`), applies dropout and
+  runs every `EncoderBlock` in order. Padding positions are hidden from attention by the mask from
+  `create_padding_mask()` (`model/masks.py`).
+- `EncoderBlock.forward()` (`model/blocks.py`) is the reference encoder block: `ln1` →
+  `MultiHeadAttention` (`model/attention.py`, 8 heads of 32 dimensions, the fused
+  `scaled_dot_product_attention` kernel) → residual with `dropout1`, then `ln2` → `FeedForward`
+  (256 → 512 → 256, `model/layers.py`) → residual with `dropout2`.
+- `Decoder.forward()` (`model/decoder.py`) does the same for the target with `DecoderBlock`s, which
+  add two things: the self-attention uses `make_target_mask()` so position *t* only sees positions
+  ≤ *t*, and a second attention (`cross_mha`) reads the encoder `memory`, restricted by the source
+  padding mask.
+- The final `ln_final` closes the pre-LN stack, and `output_projection` shares its weight matrix with
+  `Decoder.token_emb` (`model.tie_target_embeddings`), which is why the model has 9.95M parameters
+  instead of 13.7M.
 
 ## 7. End of an epoch: validation, BLEU, checkpoints
 
@@ -388,7 +393,7 @@ sequenceDiagram
    token accuracy.
 4. Only rank 0 computes BLEU; rank 1 waits at a barrier.
 5. `_decode_validation_subset()` takes the first 500 validation pairs, calls
-   `Seq2SeqTransformer.greedy_decode()` on batches of 128 (always picking the most likely next word,
+   `EncoderDecoder.greedy_decode()` on batches of 128 (always picking the most likely next word,
    at most 40 words) and `metrics.py: corpus_bleu()` scores the output with sacreBLEU against the
    reference French.
 6. BLEU joins the epoch metrics.
@@ -409,45 +414,48 @@ to MLflow (`ExperimentTracker.log_artifact()`, `log_dict()`, `log_figure()`) and
 
 ## 8. Inference logic: the same model, read back
 
-### Command line
+Inference goes through the FastAPI service (`uv run fastapi dev`, or the same app hosted on Modal by
+`scripts/modal_serve.py`). This is what happens from the moment the server starts to a translated
+sentence:
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor You
-    participant P as scripts/translate.py
-    participant T as translator.py: Translator
+    participant S as api/app.py: create_app()
+    participant RG as api/registry.py: ModelRegistry
     participant C as checkpoint.py
-    participant M as Seq2SeqTransformer
+    participant T as translator.py: Translator
+    participant M as EncoderDecoder
 
-    You->>P: python scripts/translate.py "I love this movie."
-    P->>T: Translator.from_best_run(artifacts/)
-    T->>C: find_best_checkpoint(artifacts/)
-    C-->>T: .../best.pt of the best non-smoke run
-    T->>T: from_checkpoint(): read settings.json and both vocabularies
-    T->>M: Seq2SeqTransformer(...) and load_state_dict(best.pt)
-    P->>T: translate(sentence, beam_size=4)
+    S->>RG: ModelRegistry(models_root) at startup (lifespan)
+    RG->>C: discover_checkpoints(), rank_checkpoints() per direction
+    RG->>T: Translator.from_checkpoint(best.pt) for each direction
+    T->>M: EncoderDecoder(...) and load_state_dict(best.pt)
+    You->>S: POST /translate {text, source_language, target_language}
+    S->>RG: translator_for(source, target)
+    S->>T: translate(text, beam_size=4)
     T->>T: _encode_source(): normalize_text, WordTokenizer, Vocabulary.encode
-    T->>M: encode(source) once, then decode() step by step (beam_search)
-    T-->>P: _indices_to_sentence(): Vocabulary.decode, detokenize
-    P-->>You: EN: I love this movie. / FR: j'adore ce film.
+    T->>M: encode(src) once, then decode() step by step (beam_search)
+    T-->>S: _indices_to_sentence(): Vocabulary.decode, detokenize
+    S-->>You: {"translation": "...", "model": run_name}
 ```
 
-1. You pass one or more sentences (none opens an interactive prompt).
-2. Without `--checkpoint` (or `INFERENCE_CHECKPOINT_PATH`), `load_translator()` calls
-   `Translator.from_best_run(artifacts/)`; with either of them it calls `Translator.from_checkpoint()`
-   on that file directly.
-3. `from_best_run()` calls `checkpoint.py: find_best_checkpoint()`, which scans `artifacts/`
-   recursively for `best.json` cards with weights beside them, drops smoke runs when full runs exist,
-   requires the remaining runs to share one selection metric (otherwise it stops with an error; only
-   the API's `ModelRegistry.models()` catches that and groups by metric instead) and returns the best.
-4. The chosen `best.pt` is handed back.
-5. `from_best_run()` passes it to `Translator.from_checkpoint()`, which reads the run directory:
-   `settings.json` gives the architecture (`ModelSettings`) and the training-time sentence limit; the
-   two vocabulary files restore the exact word ↔ id mapping used in training.
-6. The model is rebuilt with those settings and the saved weights are loaded (`torch.load(...,
-   weights_only=True)`), on the best available device.
-7. `translate()` with `beam_size` 4 (the default from `InferenceSettings`).
+1. When the server starts, the `lifespan` hook of `create_app()` creates a `ModelRegistry` pointing
+   at `INFERENCE_MODELS_ROOT` (default `artifacts/`; `/vol/artifacts/checkpoints` on Modal).
+2. The registry calls `checkpoint.py: discover_checkpoints()`, which scans recursively for `best.json`
+   cards with `best.pt` and `settings.json` beside them, reads each run's language direction from
+   `settings.json`, and ranks the runs of every direction with `rank_checkpoints()` (smoke runs set
+   aside, one selection metric, best first).
+3. `Translator.from_checkpoint()` is called for the best run of every direction (unless
+   `INFERENCE_AUTOLOAD_BEST_MODEL=false`, in which case `POST /models/select` does it on demand).
+4. `settings.json` gives the architecture (`ModelSettings`) and the training-time sentence limit, the
+   two vocabulary files restore the exact word ↔ id mapping, the model is rebuilt and the weights are
+   loaded with `torch.load(..., weights_only=True)` on the best available device.
+5. A request carries only the sentence, the direction and optionally `beam_size`.
+6. `ModelRegistry.translator_for()` returns the active translator of that direction (404 when no
+   model translates it, 409 when autoload is off and none was selected).
+7. `translate()` with `beam_size` 4 (the default).
 8. The sentence is cleaned and tokenised with the same functions as training; unknown words become
    `<unk>`; the result is a `[1, S]` tensor.
 9. The encoder runs once; `beam_search()` then calls `decode()` one word at a time keeping up to 4
@@ -458,19 +466,9 @@ sequenceDiagram
    calls `greedy_decode()`.
 10. Ids are mapped back to words (`Vocabulary.decode()` stops at `<eos>` and drops specials) and
     punctuation is re-attached (`WordTokenizer.detokenize()`).
-11. The translation is printed.
-
-### FastAPI service
-
-`fastapi dev` imports `transformer_nmt.api.app:app`, created by `create_app()`. Its `lifespan` hook
-builds a `ModelRegistry` (`api/registry.py`) that calls `discover_checkpoints()` and
-`rank_checkpoints()` from `checkpoint.py`, reads each run's languages from its `settings.json`
-(`ModelRegistry._languages_of()`) and loads the best run of every direction with
-`Translator.from_checkpoint()`. A `POST /translate` with `{"text", "source_language",
-"target_language", "beam_size"}` calls `ModelRegistry.translator_for(source, target)` and then exactly
-the `translate()` path above; `POST /translate/stream` calls `Translator.stream_greedy()`, which yields
-one word per decoder step so the server can send it immediately as a server-sent event. workflow.md
-Section 7 lists every endpoint.
+11. The response names the run that produced the translation. `POST /translate/stream` follows the
+    same path but calls `Translator.stream_greedy()`, which yields one word per decoder step so the
+    server can send it immediately as a server-sent event.
 
 ## 9. Quick index: which code runs when
 
@@ -483,9 +481,9 @@ Section 7 lists every endpoint.
 | Download and cache the corpus | `data/download.py` | `ensure_dataset_file()`, `download_file()`, `extract_archive_member()` |
 | Clean, split, encode | `data/dataset.py`, `data/preprocessing.py`, `data/vocabulary.py` | `load_sentence_pairs()`, `normalize_and_filter_pairs()`, `deduplicate_pairs()`, `split_pairs()`, `normalize_text()`, `WordTokenizer`, `Vocabulary.build()`, `TranslationDataset` |
 | Batch | `data/dataset.py` | `PadCollator`, `build_dataloader()` |
-| Build the network | `model/transformer.py`, `encoder.py`, `decoder.py`, `layers.py`, `attention.py`, `masks.py` | `Seq2SeqTransformer`, `TransformerEncoder`, `TransformerDecoder`, `TransformerEncoderLayer`, `TransformerDecoderLayer`, `MultiHeadAttention`, `make_padding_mask()`, `make_target_mask()` |
+| Build the network | `model/encoder_decoder.py`, `encoder.py`, `decoder.py`, `blocks.py`, `layers.py`, `attention.py`, `masks.py` | `EncoderDecoder`, `Encoder`, `Decoder`, `EncoderBlock`, `DecoderBlock`, `MultiHeadAttention`, `PositionalEncoding`, `FeedForward`, `create_padding_mask()`, `make_target_mask()` |
 | Precision and schedule | `training/precision.py`, `training/scheduler.py` | `resolve_precision()`, `autocast_context()`, `create_grad_scaler()`, `create_lr_scheduler()`, `noam_learning_rate()` |
 | Train, validate, score | `training/trainer.py`, `training/metrics.py` | `Trainer.fit()`, `_train_epoch()`, `_validate()`, `_evaluate_bleu()`, `TokenLossAccumulator`, `corpus_bleu()` |
-| Save and pick checkpoints | `training/checkpoint.py` | `save_checkpoint()`, `BestCheckpointSummary`, `discover_checkpoints()`, `rank_checkpoints()`, `find_best_checkpoint()` |
+| Save and pick checkpoints | `training/checkpoint.py` | `save_checkpoint()`, `BestCheckpointSummary`, `discover_checkpoints()`, `rank_checkpoints()` |
 | Track the experiment | `training/tracking.py`, `training/plotting.py` | `ExperimentTracker`, `relocate_mlflow_store()`, `plot_training_curves()`, `plot_step_dynamics()` |
-| Translate | `inference/translator.py`, `api/app.py`, `api/registry.py` | `Translator.from_best_run()`, `Translator.from_checkpoint()`, `translate()`, `beam_search()`, `stream_greedy()`, `create_app()`, `ModelRegistry.translator_for()` |
+| Translate | `inference/translator.py`, `api/app.py`, `api/registry.py` | `Translator.from_checkpoint()`, `translate()`, `beam_search()`, `stream_greedy()`, `create_app()`, `ModelRegistry.translator_for()` |

@@ -8,68 +8,80 @@ from torch import Tensor, nn
 
 
 class MultiHeadAttention(nn.Module):
-    """Multi-head scaled dot-product attention (Vaswani et al., 2017, section 3.2).
+    """Multi-head scaled dot-product attention (paper section 3.2.2).
 
-    The fast path delegates to ``torch.nn.functional.scaled_dot_product_attention`` so that
-    fused kernels (FlashAttention / memory-efficient attention) are used on GPUs. A reference
-    path computes the softmax explicitly when attention weights are requested.
+    Same maths as the manual self-attention of the reference (``to_q``, ``to_k``, ``to_v``
+    projections, softmax of ``QK^T / sqrt(d_k)``) extended to several heads and to
+    cross-attention (queries from one sequence, keys/values from another).
     """
 
     def __init__(
-        self, d_model: int, num_heads: int, dropout: float = 0.0, bias: bool = True
+        self,
+        d_model: int,
+        nhead: int,
+        dropout: float = 0.0,
     ) -> None:
         """Create the projection layers.
 
         Args:
-            d_model: Model (embedding) dimension.
-            num_heads: Number of parallel attention heads; must divide ``d_model``.
-            dropout: Dropout probability applied to the attention weights.
-            bias: Whether the projections carry bias terms.
+            d_model: Embedding dimension.
+            nhead: Number of attention heads; must divide ``d_model``.
+            dropout: Dropout applied to the attention weights.
         """
         super().__init__()
-        if d_model % num_heads != 0:
-            raise ValueError(f"d_model ({d_model}) must be divisible by num_heads ({num_heads})")
+        if d_model % nhead != 0:
+            raise ValueError(f"d_model ({d_model}) must be divisible by nhead ({nhead})")
         self.d_model = d_model
-        self.num_heads = num_heads
-        self.head_dim = d_model // num_heads
+        self.nhead = nhead
+        self.head_dim = d_model // nhead
         self.dropout_p = dropout
-        self.query_projection = nn.Linear(d_model, d_model, bias=bias)
-        self.key_projection = nn.Linear(d_model, d_model, bias=bias)
-        self.value_projection = nn.Linear(d_model, d_model, bias=bias)
-        self.output_projection = nn.Linear(d_model, d_model, bias=bias)
+        self.to_q = nn.Linear(d_model, d_model)
+        self.to_k = nn.Linear(d_model, d_model)
+        self.to_v = nn.Linear(d_model, d_model)
+        self.to_out = nn.Linear(d_model, d_model)
 
-    def _split_heads(self, x: Tensor) -> Tensor:
-        """Reshape ``[batch, length, d_model]`` into ``[batch, heads, length, head_dim]``."""
-        batch, length, _ = x.shape
-        return x.view(batch, length, self.num_heads, self.head_dim).transpose(1, 2)
+    def _split_heads(
+        self,
+        x: Tensor,
+    ) -> Tensor:
+        """Reshape ``[batch, len, d_model]`` into ``[batch, nhead, len, head_dim]``."""
+        batch_size, length, _ = x.shape
+        return x.view(batch_size, length, self.nhead, self.head_dim).transpose(1, 2)
 
-    def _merge_heads(self, x: Tensor) -> Tensor:
-        """Reshape ``[batch, heads, length, head_dim]`` back into ``[batch, length, d_model]``."""
-        batch, _, length, _ = x.shape
-        return x.transpose(1, 2).reshape(batch, length, self.d_model)
+    def _merge_heads(
+        self,
+        x: Tensor,
+    ) -> Tensor:
+        """Reshape ``[batch, nhead, len, head_dim]`` back into ``[batch, len, d_model]``."""
+        batch_size, _, length, _ = x.shape
+        return x.transpose(1, 2).reshape(batch_size, length, self.d_model)
 
-    def _reference_attention(
-        self, query: Tensor, key: Tensor, value: Tensor, attention_mask: Tensor | None
+    def _manual_attention(
+        self,
+        q: Tensor,
+        k: Tensor,
+        v: Tensor,
+        attn_mask: Tensor | None,
     ) -> tuple[Tensor, Tensor]:
-        """Explicit softmax attention that also returns the attention weights."""
-        scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(self.head_dim)
-        if attention_mask is not None:
-            scores = scores.masked_fill(~attention_mask, float("-inf"))
-        weights = torch.softmax(scores, dim=-1)
-        if attention_mask is not None:
-            # Match SDPA's safe softmax: a query with no attendable key gets zero weights.
-            weights = weights.masked_fill(~attention_mask.any(dim=-1, keepdim=True), 0.0)
-        weights = F.dropout(weights, p=self.dropout_p, training=self.training)
-        return torch.matmul(weights, value), weights
+        """Explicit ``softmax(QK^T / sqrt(d_k)) V`` that also returns the attention weights."""
+        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
+        if attn_mask is not None:
+            scores = scores.masked_fill(~attn_mask, float("-inf"))
+        attn = torch.softmax(scores, dim=-1)
+        if attn_mask is not None:
+            # A query with no allowed key gets zero weights instead of NaN.
+            attn = attn.masked_fill(~attn_mask.any(dim=-1, keepdim=True), 0.0)
+        attn = F.dropout(attn, p=self.dropout_p, training=self.training)
+        return torch.matmul(attn, v), attn
 
     def forward(
         self,
         query: Tensor,
         key: Tensor,
         value: Tensor,
-        attention_mask: Tensor | None = None,
+        attn_mask: Tensor | None = None,
         *,
-        return_weights: bool = False,
+        need_weights: bool = False,
     ) -> tuple[Tensor, Tensor | None]:
         """Attend from ``query`` positions to ``key``/``value`` positions.
 
@@ -77,27 +89,23 @@ class MultiHeadAttention(nn.Module):
             query: Tensor of shape ``[batch, query_len, d_model]``.
             key: Tensor of shape ``[batch, key_len, d_model]``.
             value: Tensor of shape ``[batch, key_len, d_model]``.
-            attention_mask: Boolean mask broadcastable to ``[batch, heads, query_len, key_len]``
-                where ``True`` allows attention and ``False`` blocks it.
-            return_weights: Compute and return per-head attention weights (slower path).
+            attn_mask: Boolean mask broadcastable to ``[batch, nhead, query_len, key_len]``
+                where ``True`` allows attention.
+            need_weights: Also return the attention weights (uses the slower manual path).
 
         Returns:
-            The attended output of shape ``[batch, query_len, d_model]`` and, when requested,
-            the attention weights of shape ``[batch, heads, query_len, key_len]``.
+            The attended output ``[batch, query_len, d_model]`` and, when requested, the
+            weights ``[batch, nhead, query_len, key_len]``.
         """
-        q = self._split_heads(self.query_projection(query))
-        k = self._split_heads(self.key_projection(key))
-        v = self._split_heads(self.value_projection(value))
-
-        weights: Tensor | None = None
-        if return_weights:
-            context, weights = self._reference_attention(q, k, v, attention_mask)
+        q = self._split_heads(self.to_q(query))
+        k = self._split_heads(self.to_k(key))
+        v = self._split_heads(self.to_v(value))
+        attn: Tensor | None = None
+        if need_weights:
+            out, attn = self._manual_attention(q, k, v, attn_mask)
         else:
-            context = F.scaled_dot_product_attention(
-                q,
-                k,
-                v,
-                attn_mask=attention_mask,
-                dropout_p=self.dropout_p if self.training else 0.0,
+            # Fused GPU kernel (FlashAttention) with the same result as the manual path.
+            out = F.scaled_dot_product_attention(
+                q, k, v, attn_mask=attn_mask, dropout_p=self.dropout_p if self.training else 0.0
             )
-        return self.output_projection(self._merge_heads(context)), weights
+        return self.to_out(self._merge_heads(out)), attn

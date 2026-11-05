@@ -16,16 +16,16 @@ step by step, from the command you type to the tensors in a training step and th
 src/transformer_nmt/
   config.py          Pydantic settings (all knobs are environment variables, see below)
   data/              download, normalisation, word tokenizer, vocabulary, dataset, DDP-aware loaders
-  model/             masks, multi-head attention (SDPA), encoder, decoder, Seq2SeqTransformer
+  model/             attention, layers (positional encoding, feed-forward), EncoderBlock/DecoderBlock,
+                     Encoder, Decoder, EncoderDecoder
   training/          trainer (AMP + DDP), Noam/cosine schedules, metrics (loss, ppl, accuracy, BLEU),
                      checkpoints, MLflow tracker, plots
   inference/         Translator: greedy, beam-search and token-streaming decoding from a checkpoint
-  api/               FastAPI inference service: health, model listing/selection, translate, SSE stream
+  api/               FastAPI inference service: health, languages, model selection, translate, stream
   utils/             seeding, logging, hardware introspection
 scripts/
-  train.py           training entry point (single process or under torchrun)
-  translate.py       CLI inference with the best checkpoint found under artifacts/
-  modal_train.py     Modal layer: builds the image, runs torchrun on N GPUs, syncs results back
+  train.py           training entry point, executed inside the Modal container by torchrun
+  modal_train.py     the command you run: rents the GPUs, runs train.py there, syncs results back
   modal_serve.py     hosts the same FastAPI app on a Modal GPU, reading checkpoints from the Volume
 tests/               pytest suite (data, model, schedules, metrics, checkpoints, tracking, end to end)
 artifacts/           data cache, checkpoints, plots, MLflow store (git-ignored)
@@ -39,7 +39,7 @@ payment method.
 ```bash
 uv sync                      # creates .venv and installs the locked dependencies
 cp .env.example .env         # then fill in your Modal tokens
-uv run pytest                # 85 unit and integration tests, CPU only, ~2 min
+uv run pytest                # 83 unit and integration tests, CPU only, ~2 min
 ```
 
 `.env` must contain `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` and `MODAL_PROFILE`
@@ -60,16 +60,36 @@ the Modal container.
 | `INFERENCE_` | decoding and API | `INFERENCE_BEAM_SIZE=4`, `INFERENCE_MAX_DECODE_LEN=40`, `INFERENCE_MODELS_ROOT=artifacts`, `INFERENCE_AUTOLOAD_BEST_MODEL=true` |
 | `MODAL_` | compute | `MODAL_GPU=A100-40GB`, `MODAL_GPU_COUNT=2`, `MODAL_INFERENCE_GPU=T4` |
 
-Defaults follow the paper where it makes sense for a 135k-pair corpus: d_model 256, 8 heads, 3+3 layers,
+Defaults follow the paper where it makes sense for a 135k-pair corpus: d_model 256, 8 heads, 3+3 blocks,
 FFN 512, dropout 0.1, sinusoidal positions, tied target embeddings, label smoothing 0.1, AdamW
 (β=(0.9, 0.98), ε=1e-9) with the Noam warm-up/inverse-sqrt schedule, gradient clipping at 1.0.
-Pre-LayerNorm blocks are the default (`MODEL_NORM_FIRST=false` gives the paper's Post-LN).
+
+The model follows the block structure of the reference course material: `Encoder` and `Decoder`
+hold an `nn.ModuleList` of `EncoderBlock`s / `DecoderBlock`s (one block per layer, each with
+pre-LayerNorm, multi-head attention, a feed-forward network and residual dropout), built on
+`MultiHeadAttention`, `PositionalEncoding` and `FeedForward` from `model/layers.py`; `EncoderDecoder`
+ties them together. Additions over the reference are marked with short comments in the code (fused
+attention kernel, weight tying, final LayerNorm).
 
 Data: the Tatoeba file is normalised (lower-case, accents and `œ` kept, punctuation split), exact
 duplicates are dropped, and the 90/10 split is **grouped by English sentence** so none of the many
 sources with several French translations leaks from training into validation.
 
 ## Training on Modal
+
+Training never runs on your laptop. The command below is executed locally, but everything it does
+happens on Modal:
+
+1. `modal run` imports `scripts/modal_train.py`, authenticates with the tokens from `.env`, builds (or
+   reuses) the container image and sends the code to Modal.
+2. Modal starts a container with the requested GPUs and runs `train_on_gpu()`, which launches
+   `torchrun scripts/train.py` with one process per GPU.
+3. The container's output (dataset statistics, one line per epoch, sample translations) is streamed
+   back and printed in your terminal in real time while the command is attached.
+4. When training ends, results are persisted on the Modal Volume and downloaded to `artifacts/modal/`.
+
+With `--detach` the job keeps running if you close the terminal; `modal app logs -f transformer-nmt`
+re-attaches to the live logs, and `--no-train` downloads the finished results later.
 
 ```bash
 # 1. smoke test on the configured GPUs: 3k pairs, 2 epochs, exercises DDP + bf16 + MLflow + sync
@@ -217,14 +237,6 @@ curl -N -X POST localhost:8000/translate/stream -H 'Content-Type: application/js
 
 A direction with no trained model answers `404`; with `INFERENCE_AUTOLOAD_BEST_MODEL=false` a direction
 whose model was not selected yet answers `409` until you call `/models/select`.
-
-### Command line
-
-```bash
-uv run python scripts/translate.py "I love this movie." "Where is the train station?"
-uv run python scripts/translate.py --beam-size 1 --checkpoint artifacts/modal/checkpoints/<run>/best.pt
-uv run python scripts/translate.py            # interactive mode
-```
 
 ### Hosted on Modal
 

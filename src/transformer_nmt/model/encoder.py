@@ -43,7 +43,10 @@ class Encoder(nn.Module):
         self.dropout = nn.Dropout(dropout)
         # The stack of layers is a list of blocks, one EncoderBlock per layer.
         self.blocks = nn.ModuleList(
-            [EncoderBlock(d_model, nhead, dim_feedforward, dropout) for _ in range(num_layers)]
+            [
+                EncoderBlock(d_model, nhead, dim_feedforward, dropout) 
+                for _ in range(num_layers)
+            ]
         )
         self.ln_final = nn.LayerNorm(d_model)  # closes the pre-LN stack
 

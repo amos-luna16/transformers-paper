@@ -157,9 +157,13 @@ class Trainer:
             noam_scale=settings.training.noam_lr_scale,
         )
         self.train_criterion = nn.CrossEntropyLoss(
-            ignore_index=self.pad_index, label_smoothing=settings.training.label_smoothing
+            ignore_index=self.pad_index, 
+            label_smoothing=settings.training.label_smoothing
         )
-        self.eval_criterion = nn.CrossEntropyLoss(ignore_index=self.pad_index, reduction="sum")
+        self.eval_criterion = nn.CrossEntropyLoss(
+            ignore_index=self.pad_index, 
+            reduction="sum"
+        )
 
         self.history = TrainingHistory()
         self.step_records: list[dict[str, float]] = []
@@ -184,7 +188,10 @@ class Trainer:
             model = torch.compile(model, dynamic=True)
         if self.context.is_distributed:
             device_ids = [self.context.local_rank] if self.device.type == "cuda" else None
-            model = DistributedDataParallel(model, device_ids=device_ids)
+            model = DistributedDataParallel(
+                model, 
+                device_ids=device_ids
+            )
         return model
 
     def _build_optimizer(self) -> torch.optim.AdamW:

@@ -45,7 +45,10 @@ class Decoder(nn.Module):
         self.dropout = nn.Dropout(dropout)
         # The stack of layers is a list of blocks, one DecoderBlock per layer.
         self.blocks = nn.ModuleList(
-            [DecoderBlock(d_model, nhead, dim_feedforward, dropout) for _ in range(num_layers)]
+            [
+                DecoderBlock(d_model, nhead, dim_feedforward, dropout) 
+                for _ in range(num_layers)
+            ]
         )
         self.ln_final = nn.LayerNorm(d_model)  # closes the pre-LN stack
         self.output_projection = nn.Linear(d_model, vocab_size, bias=False)

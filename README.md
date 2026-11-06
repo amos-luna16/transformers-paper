@@ -6,10 +6,6 @@ Spanish → English translation (one model per direction). Training
 runs on Modal GPUs with PyTorch DistributedDataParallel and bf16 mixed precision; every experiment is
 tracked in MLflow with checkpoints, metrics, plots and hardware metadata.
 
-A plain-English walkthrough of how every file, Modal, MLflow and the API connect (with sequence
-diagrams) lives in [docs/workflow.md](docs/workflow.md); [docs/logic.md](docs/logic.md) follows the code
-step by step, from the command you type to the tensors in a training step and the inference path.
-
 ## Project layout
 
 ```
@@ -71,9 +67,6 @@ pre-LayerNorm, multi-head attention, a feed-forward network and residual dropout
 ties them together. Additions over the reference are marked with short comments in the code (fused
 attention kernel, weight tying, final LayerNorm).
 
-Data: the Tatoeba file is normalised (lower-case, accents and `œ` kept, punctuation split), exact
-duplicates are dropped, and the 90/10 split is **grouped by English sentence** so none of the many
-sources with several French translations leaks from training into validation.
 
 ## Training on Modal
 

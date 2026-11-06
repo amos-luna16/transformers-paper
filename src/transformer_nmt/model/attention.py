@@ -8,11 +8,9 @@ from torch import Tensor, nn
 
 
 class MultiHeadAttention(nn.Module):
-    """Multi-head scaled dot-product attention (paper section 3.2.2).
-
-    Same maths as the manual self-attention of the reference (``to_q``, ``to_k``, ``to_v``
-    projections, softmax of ``QK^T / sqrt(d_k)``) extended to several heads and to
-    cross-attention (queries from one sequence, keys/values from another).
+    """Multi-head scaled dot-product attention 
+    Extended to several heads and to cross-attention 
+    (queries from one sequence, keys/values from another).
     """
 
     def __init__(
@@ -44,7 +42,7 @@ class MultiHeadAttention(nn.Module):
         self,
         x: Tensor,
     ) -> Tensor:
-        """Reshape ``[batch, len, d_model]`` into ``[batch, nhead, len, head_dim]``."""
+        """Reshape [batch, len, d_model] into [batch, nhead, len, head_dim]"""
         batch_size, length, _ = x.shape
         return x.view(batch_size, length, self.nhead, self.head_dim).transpose(1, 2)
 
@@ -52,7 +50,7 @@ class MultiHeadAttention(nn.Module):
         self,
         x: Tensor,
     ) -> Tensor:
-        """Reshape ``[batch, nhead, len, head_dim]`` back into ``[batch, len, d_model]``."""
+        """Reshape [batch, nhead, len, head_dim] back into [batch, len, d_model]."""
         batch_size, _, length, _ = x.shape
         return x.transpose(1, 2).reshape(batch_size, length, self.d_model)
 
@@ -106,6 +104,10 @@ class MultiHeadAttention(nn.Module):
         else:
             # Fused GPU kernel (FlashAttention) with the same result as the manual path.
             out = F.scaled_dot_product_attention(
-                q, k, v, attn_mask=attn_mask, dropout_p=self.dropout_p if self.training else 0.0
+                q, 
+                k, 
+                v, 
+                attn_mask=attn_mask, 
+                dropout_p=self.dropout_p if self.training else 0.0
             )
         return self.to_out(self._merge_heads(out)), attn

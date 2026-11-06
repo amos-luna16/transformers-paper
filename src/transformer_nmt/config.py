@@ -68,16 +68,36 @@ class DataSettings(BaseSettings):
         default=False,
         description="Treat the second column of the corpus as the source (reverse direction).",
     )
-    max_pairs: int = Field(default=150_000, ge=1, description="Pairs read from the file.")
-    max_seq_len: int = Field(
-        default=40, ge=4, description="Maximum tokens per sentence, including <sos>/<eos>."
+    max_pairs: int = Field(
+        default=150_000, 
+        ge=1, 
+        description="Pairs read from the file."
     )
-    min_token_freq: int = Field(default=2, ge=1, description="Minimum count to enter the vocab.")
-    validation_fraction: float = Field(default=0.1, gt=0.0, lt=1.0)
+    max_seq_len: int = Field(
+        default=40, 
+        ge=4, 
+        description="Maximum tokens per sentence, including <sos>/<eos>."
+    )
+    min_token_freq: int = Field(
+        default=2, 
+        ge=1, 
+        description="Minimum count to enter the vocab."
+    )
+    validation_fraction: float = Field(
+        default=0.1, 
+        gt=0.0, 
+        lt=1.0
+    )
     split_seed: int = 42
-    num_workers: int = Field(default=0, ge=0, description="DataLoader worker processes.")
+    num_workers: int = Field(
+        default=0, 
+        ge=0, 
+        description="DataLoader worker processes."
+    )
     pad_to_multiple_of: int = Field(
-        default=8, ge=1, description="Pad batch lengths to a multiple of this (tensor cores)."
+        default=8, 
+        ge=1, 
+        description="Pad batch lengths to a multiple of this (tensor cores)."
     )
 
 
@@ -93,7 +113,9 @@ class ModelSettings(BaseSettings):
     dim_feedforward: int = Field(default=512, ge=8)
     dropout: float = Field(default=0.1, ge=0.0, lt=1.0)
     max_position_embeddings: int = Field(
-        default=256, ge=8, description="Length of the sinusoidal positional-encoding table."
+        default=256, 
+        ge=8, 
+        description="Length of the sinusoidal positional-encoding table."
     )
     tie_target_embeddings: bool = Field(
         default=True,
@@ -125,10 +147,14 @@ class TrainingSettings(BaseSettings):
     )
     scheduler: SchedulerName = "noam"
     peak_learning_rate: float = Field(
-        default=1e-3, gt=0.0, description="Peak LR for the cosine schedule."
+        default=1e-3, 
+        gt=0.0, 
+        description="Peak LR for the cosine schedule."
     )
     noam_lr_scale: float = Field(
-        default=1.0, gt=0.0, description="Multiplier on the paper's d_model^-0.5 Noam schedule."
+        default=1.0, 
+        gt=0.0, 
+        description="Multiplier on the paper's d_model^-0.5 Noam schedule."
     )
     warmup_steps: int = Field(
         default=2000,
@@ -144,7 +170,9 @@ class TrainingSettings(BaseSettings):
     seed: int = 42
     log_every_n_steps: int = Field(default=50, ge=1)
     bleu_eval_samples: int = Field(
-        default=500, ge=0, description="Validation sentences decoded for BLEU each epoch."
+        default=500, 
+        ge=0, 
+        description="Validation sentences decoded for BLEU each epoch."
     )
     checkpoint_every_n_epochs: int = Field(default=5, ge=0, description="0 keeps only last/best.")
     early_stopping_patience: int = Field(default=0, ge=0, description="0 disables early stopping.")
@@ -221,7 +249,8 @@ class InferenceSettings(BaseSettings):
         description="Directory scanned for run checkpoints; defaults to the artifacts directory.",
     )
     autoload_best_model: bool = Field(
-        default=True, description="Load the best available run when the API starts."
+        default=True, 
+        description="Load the best available run when the API starts."
     )
 
 
